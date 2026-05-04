@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: #f8f4ec;
+}
+
+body {
+  margin: 0;
+  background:
+    linear-gradient(90deg, rgba(154, 106, 67, 0.07) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(154, 106, 67, 0.05) 1px, transparent 1px),
+    #f8f4ec;
+  color: #1e1b18;
+  min-width: 320px;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: rgba(154, 106, 67, 0.22);
+}
+

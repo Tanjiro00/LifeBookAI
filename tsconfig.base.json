@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "jsx": "preserve",
+    "resolveJsonModule": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@lifebook/ai": ["packages/ai/src/index.ts"],
+      "@lifebook/ai/*": ["packages/ai/src/*"],
+      "@lifebook/renderer": ["packages/renderer/src/index.ts"],
+      "@lifebook/renderer/*": ["packages/renderer/src/*"]
+    }
+  },
+  "include": [
+    "apps/bot/**/*.ts",
+    "packages/**/*.ts",
+    "tests/**/*.ts"
+  ],
+  "exclude": ["node_modules", ".next", "dist"]
+}

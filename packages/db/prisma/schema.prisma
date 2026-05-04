@@ -1,0 +1,209 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String            @id @default(uuid())
+  telegramId        BigInt            @unique
+  username          String?
+  firstName         String?
+  lastName          String?
+  languageCode      String?
+  timezone          String?
+  state             UserState         @default(NEW_USER)
+  onboardingDone    Boolean           @default(false)
+  writingGoal       String?
+  writingStyle      String?
+  reminderFrequency ReminderFrequency @default(WEEKLY)
+  reminderDay       Int?
+  reminderTime      String?
+  isPaid            Boolean           @default(false)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  entries           Entry[]
+  chapters          Chapter[]
+  books             Book[]
+  memories          Memory[]
+  payments          Payment[]
+
+  @@index([state])
+  @@index([reminderFrequency, reminderDay, reminderTime])
+}
+
+model Entry {
+  id              String                  @id @default(uuid())
+  userId          String
+  user            User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rawText         String?
+  telegramVoiceId String?
+  audioUrl        String?
+  transcript      String?
+  mood            String?
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  status          EntryStatus             @default(DRAFT)
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  questions       ClarificationQuestion[]
+  chapter         Chapter?
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model ClarificationQuestion {
+  id         String    @id @default(uuid())
+  entryId    String
+  entry      Entry     @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  question   String
+  answer     String?
+  reason     String?
+  sortOrder  Int
+  createdAt  DateTime  @default(now())
+  answeredAt DateTime?
+
+  @@index([entryId, sortOrder])
+}
+
+model Chapter {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entryId      String   @unique
+  entry        Entry    @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  bookId       String?
+  book         Book?    @relation(fields: [bookId], references: [id], onDelete: SetNull)
+  title        String
+  subtitle     String?
+  summary      String?
+  content      String
+  quote        String?
+  mood         String[] @default([])
+  tags         String[] @default([])
+  people       String[] @default([])
+  places       String[] @default([])
+  keyEvents    String[] @default([])
+  version      Int      @default(1)
+  shareToken   String?  @unique
+  cardImageUrl String?
+  isSaved      Boolean  @default(false)
+  isPrivate    Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memories     Memory[]
+
+  @@index([userId, isSaved, createdAt])
+  @@index([bookId])
+}
+
+model Book {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  subtitle    String?
+  periodStart DateTime?
+  periodEnd   DateTime?
+  coverUrl    String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  chapters    Chapter[]
+
+  @@index([userId, createdAt])
+}
+
+model Memory {
+  id              String     @id @default(uuid())
+  userId          String
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type            MemoryType
+  title           String
+  content         String
+  confidence      Float      @default(0.7)
+  sourceChapterId String?
+  sourceChapter   Chapter?   @relation(fields: [sourceChapterId], references: [id], onDelete: SetNull)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([userId, type])
+  @@index([sourceChapterId])
+}
+
+model Payment {
+  id                      String        @id @default(uuid())
+  userId                  String
+  user                    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  telegramPaymentChargeId String?
+  providerPaymentChargeId String?
+  currency                String
+  amount                  Int
+  productCode             String
+  status                  PaymentStatus
+  createdAt               DateTime      @default(now())
+
+  @@index([userId, createdAt])
+  @@index([telegramPaymentChargeId])
+}
+
+enum UserState {
+  NEW_USER
+  ONBOARDING_GOAL
+  ONBOARDING_STYLE
+  ONBOARDING_FREQUENCY
+  ONBOARDING_REMINDER_DAY
+  ONBOARDING_REMINDER_TIME
+  READY
+  WAITING_FOR_WEEKLY_INPUT
+  TRANSCRIBING_AUDIO
+  GENERATING_QUESTIONS
+  WAITING_FOR_ANSWERS
+  GENERATING_CHAPTER
+  REVIEWING_CHAPTER
+  CHAPTER_SAVED
+}
+
+enum EntryStatus {
+  DRAFT
+  COLLECTED
+  TRANSCRIBING
+  QUESTIONS_GENERATED
+  ANSWERS_COLLECTED
+  GENERATING_CHAPTER
+  CHAPTER_GENERATED
+  SAVED
+  ARCHIVED
+}
+
+enum ReminderFrequency {
+  WEEKLY
+  MONTHLY
+  MANUAL
+}
+
+enum MemoryType {
+  PERSON
+  PLACE
+  THEME
+  LIFE_EVENT
+  GOAL
+  FEAR
+  ACHIEVEMENT
+  PREFERENCE
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  REFUNDED
+  FAILED
+}
+
