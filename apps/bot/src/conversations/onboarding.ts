@@ -1,100 +1,53 @@
-import { ReminderFrequency } from "@prisma/client";
+import { ReminderFrequency, UserState } from "@prisma/client";
 import type { Context } from "grammy";
-import { goalKeyboard, privacyKeyboard, styleKeyboard, frequencyKeyboard, dayKeyboard, timeKeyboard, GOAL_LABELS, STYLE_LABELS } from "../keyboards/onboarding.js";
-import {
-  ensureTelegramUser,
-  markOnboardingReady,
-  updateReminderDay,
-  updateReminderFrequency,
-  updateReminderTime,
-  updateWritingGoal,
-  updateWritingStyle
-} from "../services/userService.js";
+import { ensureTelegramUser, markOnboardingReady } from "../services/userService.js";
 import { prisma } from "../lib/db.js";
 import { track } from "../services/analytics.js";
-import { sendNewChapterPrompt } from "../commands/new.js";
 
-export async function beginOnboarding(ctx: Context): Promise<void> {
+const DAY_NAMES_RU: Record<number, string> = {
+  1: "в понедельник",
+  2: "во вторник",
+  3: "в среду",
+  4: "в четверг",
+  5: "в пятницу",
+  6: "в субботу",
+  7: "в воскресенье"
+};
+
+// One-step reminder picker. Called after the user has just received their first entry card.
+// Encodes (frequency, day, time): "WEEKLY:7:21:00" / "MANUAL:0:00:00" etc.
+export async function applyReminderPreset(ctx: Context, code: string): Promise<void> {
   const user = await ensureTelegramUser(ctx);
-  await prisma.user.update({ where: { id: user.id }, data: { state: "ONBOARDING_GOAL" } });
-  track("onboarding_started", { userId: user.id });
-  await ctx.reply("Для кого ты хочешь писать эту книгу?", { reply_markup: goalKeyboard() });
-}
+  const wasOnboarding = !user.onboardingDone;
 
-export async function chooseGoal(ctx: Context, value: string): Promise<void> {
-  const user = await ensureTelegramUser(ctx);
-  await updateWritingGoal(user.id, GOAL_LABELS[value] || value);
-  await ctx.reply("Каким должен быть стиль твоей книги?", { reply_markup: styleKeyboard() });
-}
+  const [freqRaw, dayRaw, time] = code.split(":") as [string, string, string?];
+  const frequency = freqRaw as ReminderFrequency;
 
-export async function chooseStyle(ctx: Context, value: string): Promise<void> {
-  const user = await ensureTelegramUser(ctx);
-  await updateWritingStyle(user.id, STYLE_LABELS[value] || value);
-  await ctx.reply("Как часто напоминать тебе написать новую главу?", { reply_markup: frequencyKeyboard() });
-}
-
-export async function chooseFrequency(ctx: Context, value: string): Promise<void> {
-  const user = await ensureTelegramUser(ctx);
-  const frequency = value as ReminderFrequency;
-  await updateReminderFrequency(user.id, frequency);
-
+  const data: Parameters<typeof prisma.user.update>[0]["data"] = {
+    reminderFrequency: frequency,
+    state: UserState.READY
+  };
   if (frequency === ReminderFrequency.MANUAL) {
-    await ctx.reply(
-      ["Важно: твои главы приватны по умолчанию.", "", "Ты сам решаешь, что сохранять, удалять или отправлять другим."].join("\n"),
-      { reply_markup: privacyKeyboard() }
-    );
-    return;
+    data.reminderDay = null;
+    data.reminderTime = null;
+  } else {
+    data.reminderDay = Number(dayRaw) || null;
+    data.reminderTime = time && /^\d{2}:\d{2}$/.test(time) ? time : null;
   }
 
-  await ctx.reply("В какой день удобнее?", { reply_markup: dayKeyboard() });
-}
+  await prisma.user.update({ where: { id: user.id }, data });
 
-export async function chooseReminderDay(ctx: Context, value: string): Promise<void> {
-  const user = await ensureTelegramUser(ctx);
-  const day = Number.parseInt(value, 10);
-  await updateReminderDay(user.id, day);
-  await ctx.reply("В какое время?", { reply_markup: timeKeyboard() });
-}
-
-export async function chooseReminderTime(ctx: Context, value: string): Promise<void> {
-  const user = await ensureTelegramUser(ctx);
-
-  if (value === "custom") {
-    await ctx.reply("Напиши время в формате 21:30.");
-    return;
+  if (wasOnboarding) {
+    await markOnboardingReady(user.id);
+    track("onboarding_completed", { userId: user.id });
   }
 
-  await updateReminderTime(user.id, value);
-  await ctx.reply(
-    ["Важно: твои главы приватны по умолчанию.", "", "Ты сам решаешь, что сохранять, удалять или отправлять другим."].join("\n"),
-    { reply_markup: privacyKeyboard() }
-  );
+  await ctx.reply(presetConfirmation(frequency, dayRaw, time));
 }
 
-export async function handleCustomReminderTime(ctx: Context, timeText: string): Promise<boolean> {
-  const user = await ensureTelegramUser(ctx);
-  if (user.state !== "ONBOARDING_REMINDER_TIME") {
-    return false;
-  }
-
-  if (!/^\d{2}:\d{2}$/.test(timeText)) {
-    await ctx.reply("Нужно время в формате 21:30.");
-    return true;
-  }
-
-  await updateReminderTime(user.id, timeText);
-  await ctx.reply(
-    ["Важно: твои главы приватны по умолчанию.", "", "Ты сам решаешь, что сохранять, удалять или отправлять другим."].join("\n"),
-    { reply_markup: privacyKeyboard() }
-  );
-  return true;
+function presetConfirmation(freq: string, dayRaw: string | undefined, time: string | undefined): string {
+  if (freq === "MANUAL") return "Хорошо. Возвращайся когда захочешь — пиши, я отвечу.";
+  if (freq === "MONTHLY") return `Хорошо. Напомню раз в две-три недели${time ? ` в ${time}` : ""}.`;
+  const day = dayRaw ? DAY_NAMES_RU[Number(dayRaw)] : null;
+  return day && time ? `Хорошо. Напомню ${day} в ${time}.` : "Хорошо. Напомню через неделю.";
 }
-
-export async function finishOnboarding(ctx: Context): Promise<void> {
-  const user = await ensureTelegramUser(ctx);
-  await markOnboardingReady(user.id);
-  track("onboarding_completed", { userId: user.id });
-  await ctx.reply("Готово. Начнём с первой главы.");
-  await sendNewChapterPrompt(ctx);
-}
-

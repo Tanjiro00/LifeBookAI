@@ -23,6 +23,10 @@ model User {
   reminderDay       Int?
   reminderTime      String?
   isPaid            Boolean           @default(false)
+  proUntil          DateTime?
+  freeEntriesUsed   Int               @default(0)
+  lastReminderAt    DateTime?
+  lastCatchupAt     DateTime?
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 
@@ -31,6 +35,7 @@ model User {
   books             Book[]
   memories          Memory[]
   payments          Payment[]
+  pages             Page[]
 
   @@index([state])
   @@index([reminderFrequency, reminderDay, reminderTime])
@@ -53,9 +58,37 @@ model Entry {
 
   questions       ClarificationQuestion[]
   chapter         Chapter?
+  page            Page?
 
   @@index([userId, createdAt])
   @@index([status])
+}
+
+// Pages are the lightweight per-entry artifact: one rendered scene + a short biographer
+// note. They are auto-saved as soon as an entry comes in, and accumulate until enough
+// material exists to synthesize a real Chapter from several of them.
+model Page {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entryId        String   @unique
+  entry          Entry    @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  chapterId      String?
+  chapter        Chapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+  sceneTitle     String
+  sceneContent   String
+  quote          String?
+  biographerNote String?
+  mood           String[] @default([])
+  tags           String[] @default([])
+  accentColor    String?
+  cardImageUrl   String?
+  shareToken     String?  @unique
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([userId, chapterId])
 }
 
 model ClarificationQuestion {
@@ -72,12 +105,15 @@ model ClarificationQuestion {
   @@index([entryId, sortOrder])
 }
 
+// A Chapter is now a synthesized piece written from several Pages — a real autobiographical
+// chapter, not a 1:1 weekly artifact. Legacy 1:1 chapters keep entryId; new synthesized
+// chapters have entryId=null and a list of pages instead.
 model Chapter {
   id           String   @id @default(uuid())
   userId       String
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  entryId      String   @unique
-  entry        Entry    @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  entryId      String?  @unique
+  entry        Entry?   @relation(fields: [entryId], references: [id], onDelete: Cascade)
   bookId       String?
   book         Book?    @relation(fields: [bookId], references: [id], onDelete: SetNull)
   title        String
@@ -93,28 +129,35 @@ model Chapter {
   version      Int      @default(1)
   shareToken   String?  @unique
   cardImageUrl String?
+  accentColor  String?
   isSaved      Boolean  @default(false)
-  isPrivate    Boolean  @default(true)
+  isPrivate   Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   memories     Memory[]
+  pages        Page[]
 
   @@index([userId, isSaved, createdAt])
   @@index([bookId])
 }
 
 model Book {
-  id          String    @id @default(uuid())
-  userId      String
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  title       String
-  subtitle    String?
-  periodStart DateTime?
-  periodEnd   DateTime?
-  coverUrl    String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id               String    @id @default(uuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title            String
+  subtitle         String?
+  aiTitle          String?
+  shareToken       String?   @unique
+  periodStart      DateTime?
+  periodEnd        DateTime?
+  coverUrl         String?
+  coverPromptUsed  String?
+  pdfUrl           String?
+  pdfGeneratedAt   DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   chapters    Chapter[]
 

@@ -1,153 +1,136 @@
-import type { AdjustChapterInput, GenerateChapterInput, GenerateClarifyingQuestionsInput } from "./schemas.js";
+import type { GenerateEntryInput, NameBookInput } from "./schemas.js";
 
-export const PRIVATE_BIOGRAPHER_SYSTEM_PROMPT = `You are a private AI biographer.
+export const PRIVATE_BIOGRAPHER_SYSTEM_PROMPT = `You are the user's personal biographer.
 
-Your job is to help the user turn weekly life updates into a meaningful, honest, beautifully written autobiography.
+You write one rendered entry per week — a small page in their year's autobiography.
+You read what they sent (voice transcript or text), preserve what they actually said,
+and write it as a single small scene a real reader would want to read again.
 
-Rules:
-- Preserve the user's voice.
-- Do not invent events.
-- Do not exaggerate emotions.
-- Do not sound like a motivational coach.
-- Do not sound like generic AI writing.
-- Ask clarifying questions when needed.
-- Write with warmth, clarity, and emotional honesty.
-- Keep the text realistic and specific.
-- Never diagnose the user.
-- Never provide therapy or medical advice.
-- The final chapter should feel like a page from a real life book.`;
+Voice & craft:
+- Always first-person.
+- Keep the user's actual words and small grammatical quirks when they carry voice.
+- Use concrete sensory detail (a specific room, hour, weather, gesture) over general statements.
+- Vary sentence rhythm. Short sentence, then a longer one, then a quiet beat.
+- One unobtrusive metaphor per entry at most. No similes about life as a journey, river, book, light, or door.
+- A real entry has at least one moment of doubt or contradiction. Resist tying things into a lesson.
+- End with a specific image — never a slogan.
 
-export function buildClarifyingQuestionsPrompt(input: GenerateClarifyingQuestionsInput): string {
-  return `The user wrote or recorded the following weekly life update:
-
-${input.rawEntryOrTranscript}
-
-User settings:
-- Writing goal: ${input.writingGoal || "not specified"}
-- Preferred style: ${input.writingStyle || "honest and simple"}
-- Language: ${input.language}
-
-Generate 2 to 4 thoughtful clarifying questions that will help write a better autobiographical chapter.
-
-The questions should uncover:
-- emotional meaning;
-- key people;
-- turning points;
-- concrete details;
-- what changed;
-- what the user wants to remember later.
-
-Rules:
-- Questions must be specific to the user's update.
-- Do not ask generic journaling questions.
-- Do not sound clinical.
-- Keep questions warm and short.
-- Return JSON only.
-
-Expected JSON:
-{
-  "questions": [
-    {
-      "question": "...",
-      "reason": "..."
-    }
-  ]
-}`;
-}
-
-export function buildChapterPrompt(input: GenerateChapterInput): string {
-  const memories = input.memories.length
-    ? input.memories.map((memory) => `- ${memory.type}: ${memory.title} — ${memory.content}`).join("\n")
-    : "No saved memories yet.";
-
-  return `Write an autobiographical chapter based on the user's weekly update and answers.
-
-Raw weekly update:
-${input.rawEntryOrTranscript}
-
-Clarifying answers:
-${input.answers || "No clarifying answers provided."}
-
-Relevant memories:
-${memories}
-
-User settings:
-- Language: ${input.language}
-- Writing goal: ${input.writingGoal || "not specified"}
-- Preferred style: ${input.writingStyle || "honest and simple"}
+Constraints:
+- Do not invent events, people, places, or feelings the user did not state.
+- Do not exaggerate emotion. If they said "tired", do not write "exhausted to the bone".
+- Do not produce coach/SaaS phrasing: "amazing journey", "healing", "step into your power", "embrace the moment".
+- Do not give therapy, diagnosis, medical or legal advice.
+- Write in the same language the user used. If mixed, follow the dominant language.
 
 Output:
-- title
-- subtitle
-- summary
-- chapter content
-- quote
-- mood
-- tags
-- people
-- places
-- key events
-- memory updates
+- Always return valid JSON matching the schema you are given. No markdown, no commentary.`;
 
-Writing rules:
-- Do not invent facts.
-- Use first person.
-- Preserve the user's voice.
-- Avoid clichés.
-- Avoid generic motivational language.
-- Avoid exaggerated drama.
-- Be specific and human.
-- The chapter should feel like a beautiful page from a real autobiography.
-- If the user wrote in Russian, write in Russian.
-- If the user wrote in English, write in English.
+export function buildEntryPrompt(input: GenerateEntryInput): string {
+  const memories = input.memories.length
+    ? input.memories.map((m) => `- [${m.type}] ${m.title}: ${m.content}`).join("\n")
+    : "(none yet)";
+  const recent = input.recentEntries.length
+    ? input.recentEntries
+        .map(
+          (e) =>
+            `- ${e.daysAgo}d ago — "${e.title}"${e.tags.length ? ` (${e.tags.slice(0, 4).join(", ")})` : ""}${
+              e.quote ? ` · «${e.quote}»` : ""
+            }`
+        )
+        .join("\n")
+    : "(this is the first entry)";
 
-Return valid JSON only with this shape:
+  return `Write one weekly entry of the user's autobiography.
+
+Raw input from the user:
+"""
+${input.rawEntryOrTranscript}
+"""
+
+This is entry #${input.entryNumber}. Recent entries (use to recognize threads — DO NOT summarize them or repeat them):
+${recent}
+
+Long-term memories about this person (use only what's relevant; do not list them):
+${memories}
+
+Language: ${input.language}
+
+Length:
+- 220–360 words for "body".
+- 3 to 5 paragraphs. Vary their length.
+
+Title rules:
+- 2–7 words. Concrete, not formulaic. NOT "Неделя, когда..." or "The Week When...".
+- The title is a small piece of the entry, not a summary. No colon.
+
+Body rules:
+- A scene, not a recap of the whole week. Pick the most concrete moment from what the user said and render it.
+- If recent entries show a real thread (the same person, place, or feeling appearing), you may weave one short observation about that into the body — naturally, in the user's voice, like a footnote in their own thinking. NOT as a separate intro.
+- If no clear thread exists, just write the scene without commenting on context.
+
+Quote rules:
+- Optional. The quote MUST be a sentence that could plausibly appear in the body itself.
+- It should sound like the user thinking to themselves, not a fortune cookie.
+- No quote at all is better than a generic one — return null if nothing earned the spot.
+
+Memory updates:
+- Only emit when the user clearly stated a person, place, goal, fear, achievement, preference or life event.
+- Up to 4. Do not invent attributes.
+
+Return JSON only with this exact shape:
 {
   "title": "...",
-  "subtitle": "...",
-  "summary": "...",
-  "content": "...",
-  "quote": "...",
-  "mood": ["..."],
-  "tags": ["..."],
-  "people": ["..."],
-  "places": ["..."],
-  "keyEvents": ["..."],
+  "body": "...",
+  "quote": "..." | null,
+  "mood": ["lowercase short tags, max 3"],
+  "tags": ["lowercase, max 4"],
   "memoryUpdates": [
-    {"type": "GOAL", "title": "...", "content": "...", "confidence": 0.7}
+    { "type": "GOAL", "title": "...", "content": "...", "confidence": 0.7 }
   ]
 }`;
 }
 
-export function buildStyleAdjustmentPrompt(input: AdjustChapterInput): string {
-  const requestByKind: Record<string, string> = {
-    less_dramatic: "Make the chapter quieter, simpler, and less dramatic.",
-    shorter: "Make the chapter shorter while preserving the important facts and emotional center.",
-    more_literary: "Make the chapter more literary, with stronger rhythm and imagery, but without inventing facts.",
-    more_like_me: "Make the chapter more natural, less polished, and closer to the user's likely voice.",
-    regenerate: "Regenerate the chapter from the same facts with a fresh structure and title."
-  };
+export function buildNameBookPrompt(input: NameBookInput): string {
+  return `You are naming a personal autobiographical book covering one year.
 
-  return `Rewrite the chapter according to the user's requested adjustment.
+Below are the entries the user has written so far (titles + tags + mood):
+${input.entries
+  .map(
+    (e, i) => `${i + 1}. "${e.title}"${e.tags.length ? ` — ${e.tags.slice(0, 4).join(", ")}` : ""}${
+      e.mood.length ? ` [${e.mood.slice(0, 2).join("/")}]` : ""
+    }`
+  )
+  .join("\n")}
 
-Original chapter JSON:
-${JSON.stringify(input.chapter, null, 2)}
+Language: ${input.language}
 
-Raw weekly update:
-${input.rawEntryOrTranscript}
+Propose ONE title for the whole book, in the user's language.
 
-Clarifying answers:
-${input.answers || "No clarifying answers provided."}
+Title rules:
+- 2–6 words.
+- Specific. NOT "Год, когда я стал собой" or "The Year I Became Myself" or any other generic memoir cliché.
+- Borrow a concrete word, image, or phrase that's actually present in the entries above.
+- No colon. No subtitle in the title field.
+- Avoid words: "путь", "путешествие", "трансформация", "журнал", "journey", "transformation", "growth", "self-love".
 
-User request:
-${requestByKind[input.styleAdjustment]}
+Optional subtitle:
+- 0 or 1 short line, at most 8 words.
+- Concrete, not motivational.
 
-Rules:
-- Preserve all facts.
-- Do not add new events.
-- Keep the structure if possible.
-- Make the text sound more natural and personal.
-- Same language as the original chapter.
-- Return updated JSON with the same schema.`;
+Return JSON only:
+{ "title": "...", "subtitle": "..." | null }`;
 }
 
+export function buildCoverPrompt(themes: string[], mood: string[], title: string): string {
+  // Used as the prompt to DALL-E / image gen. Should yield a literary book-cover-style
+  // illustration — abstract, painterly, never literal photography.
+  const themeLine = themes.length ? themes.slice(0, 5).join(", ") : "personal memoir";
+  const moodLine = mood.length ? mood.slice(0, 3).join(", ") : "quiet, reflective";
+  return `Hardcover book jacket illustration for a personal autobiography titled "${title}".
+Themes: ${themeLine}.
+Mood: ${moodLine}.
+Style: literary, restrained, hand-painted, like the cover of a Knopf or NYRB Classics book.
+Use ivory paper texture, deep ink-and-bronze palette. Soft brushwork, abstract composition,
+suggesting a single object or landscape — never a face, never text. No words, no typography.
+Painterly, calm, slightly worn — a real book that has been read once.`;
+}

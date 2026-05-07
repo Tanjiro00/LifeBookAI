@@ -1,38 +1,29 @@
-export type ChapterDto = {
-  title: string;
-  subtitle: string | null;
+export type BookEntryDto = {
+  id: string;
+  sceneTitle: string;
+  sceneContent: string;
   quote: string | null;
-  content: string;
+  accentColor?: string | null;
   createdAt: string;
-  isSaved: boolean;
 };
 
 export type BookDto = {
   title: string;
   subtitle: string | null;
-  chapters: {
-    id: string;
-    title: string;
-    quote: string | null;
-    createdAt: string;
-  }[];
+  coverUrl?: string | null;
+  pdfUrl?: string | null;
+  createdAt: string;
+  entries: BookEntryDto[];
 };
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8080").replace(/\/$/, "");
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8090").replace(/\/$/, "");
 
 async function fetchJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`);
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
+  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
   return response.json() as Promise<T>;
 }
 
-export function getChapter(shareToken: string): Promise<ChapterDto> {
-  return fetchJson<ChapterDto>(`/api/chapters/${encodeURIComponent(shareToken)}`);
+export function getBook(shareToken: string): Promise<BookDto> {
+  return fetchJson<BookDto>(`/api/books/${encodeURIComponent(shareToken)}`);
 }
-
-export function getBook(bookId: string): Promise<BookDto> {
-  return fetchJson<BookDto>(`/api/books/${encodeURIComponent(bookId)}`);
-}
-

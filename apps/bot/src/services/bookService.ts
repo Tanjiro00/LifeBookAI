@@ -1,38 +1,25 @@
 import { prisma } from "../lib/db.js";
 
 export async function getBookSummary(userId: string) {
-  const [book, savedChapters] = await Promise.all([
-    prisma.book.findFirst({ where: { userId }, orderBy: { createdAt: "asc" } }),
-    prisma.chapter.findMany({
-      where: { userId, isSaved: true },
+  const [book, count, latest] = await Promise.all([
+    prisma.book.findFirst({
+      where: { userId },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, title: true, aiTitle: true, subtitle: true, shareToken: true, coverUrl: true }
+    }),
+    prisma.page.count({ where: { userId } }),
+    prisma.page.findFirst({
+      where: { userId },
       orderBy: { createdAt: "desc" },
-      take: 7,
-      select: {
-        id: true,
-        title: true,
-        shareToken: true,
-        createdAt: true
-      }
+      select: { sceneTitle: true, createdAt: true }
     })
   ]);
-
-  const count = await prisma.chapter.count({ where: { userId, isSaved: true } });
-  const first = savedChapters.at(-1)?.createdAt;
-  const last = savedChapters.at(0)?.createdAt;
-
-  return {
-    book,
-    savedChapters,
-    count,
-    periodStart: first,
-    periodEnd: last
-  };
+  return { book, count, latest };
 }
 
-export async function getLatestSavedChapter(userId: string) {
-  return prisma.chapter.findFirst({
-    where: { userId, isSaved: true },
+export async function getLatestEntry(userId: string) {
+  return prisma.page.findFirst({
+    where: { userId },
     orderBy: { createdAt: "desc" }
   });
 }
-

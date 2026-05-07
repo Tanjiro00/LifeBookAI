@@ -1,341 +1,170 @@
-import { UserState } from "@prisma/client";
 import type { Context } from "grammy";
-import { InlineKeyboard } from "grammy";
 import { sendBook } from "../commands/book.js";
 import { sendNewChapterPrompt } from "../commands/new.js";
 import { sendSettings } from "../commands/settings.js";
 import { sendStart } from "../commands/start.js";
-import { ADJUSTMENT_BY_CODE } from "../keyboards/chapterActions.js";
-import { confirmDeleteKeyboard } from "../keyboards/settings.js";
-import { frequencyKeyboard, styleKeyboard } from "../keyboards/onboarding.js";
-import {
-  beginOnboarding,
-  chooseFrequency,
-  chooseGoal,
-  chooseReminderDay,
-  chooseReminderTime,
-  chooseStyle,
-  finishOnboarding
-} from "../conversations/onboarding.js";
-import { generateChapterForEntry, generateQuestionsForEntry } from "../conversations/weeklyEntry.js";
-import { adjustReviewedChapter, saveReviewedChapter } from "../conversations/chapterReview.js";
-import { deleteLatestSavedChapter } from "../services/chapterService.js";
+import { applyReminderPreset } from "../conversations/onboarding.js";
 import { ensureTelegramUser } from "../services/userService.js";
-import { getLatestSavedChapter } from "../services/bookService.js";
-import { chapterPreviewUrl } from "../services/storage.js";
+import { bookPreviewUrl } from "../services/storage.js";
+import { findProductByCode, isProActive, PRODUCT_CATALOG, paywallText } from "../services/subscriptions.js";
+import { paywallKeyboard } from "../keyboards/settings.js";
+import { buildBookPdfForUser } from "../services/bookComposer.js";
+import { InputFile } from "grammy";
 import { prisma } from "../lib/db.js";
 import { track } from "../services/analytics.js";
-import { isTelegramInlineUrl } from "../services/urls.js";
-import { config } from "../config.js";
+import { logger } from "../lib/logger.js";
+
+const PROMPT_HINTS_RU = [
+  "Что было главным событием этой недели?",
+  "Кто был рядом — даже если появился ненадолго?",
+  "Какой момент ты хочешь запомнить через 10 лет?",
+  "Что-то изменилось в тебе или вокруг — даже на миллиметр?",
+  "Какую фразу ты повторял(а) про себя на этой неделе?"
+];
 
 export async function handleCallbackQuery(ctx: Context): Promise<void> {
   const data = ctx.callbackQuery?.data;
-  if (!data) {
-    return;
-  }
+  if (!data) return;
 
-  await ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery().catch(() => {});
 
-  if (data === "start:onboarding") {
-    await beginOnboarding(ctx);
-    return;
-  }
+  // Top-level navigation
+  if (data === "nav:start") return void (await sendStart(ctx));
+  if (data === "menu:new") return void (await sendNewChapterPrompt(ctx));
+  if (data === "menu:book") return void (await sendBook(ctx));
+  if (data === "menu:settings") return void (await sendSettings(ctx));
 
-  if (data === "start:example") {
-    await sendExample(ctx);
-    return;
-  }
-
-  if (data === "start:how") {
-    await ctx.reply(
-      [
-        "Ты отправляешь текст или голосовое о неделе.",
-        "",
-        "Я задаю 2–4 конкретных вопроса, чтобы не потерять живые детали, а потом превращаю это в главу личной книги.",
-        "",
-        "Можно сохранить главу, переделать стиль или открыть её как страницу книги."
-      ].join("\n")
-    );
-    return;
-  }
-
-  if (data === "nav:start") {
-    await sendStart(ctx);
-    return;
-  }
-
-  if (data === "menu:new") {
-    await sendNewChapterPrompt(ctx);
-    return;
-  }
-
-  if (data === "menu:book") {
-    await sendBook(ctx);
-    return;
-  }
-
-  if (data === "menu:settings") {
-    await sendSettings(ctx);
-    return;
-  }
-
-  if (data === "menu:export") {
-    await ctx.reply("PDF-экспорт заложен в архитектуру. В MVP можно открывать главы как красивые страницы книги; полный PDF включается следующим этапом.");
-    return;
-  }
-
+  // Weekly prompt buttons
   if (data === "entry:prompts") {
-    await ctx.reply(
-      [
-        "Можешь ответить на любые из этих вопросов:",
-        "",
-        "1. Что было главным событием недели?",
-        "2. Кто был рядом?",
-        "3. Что тебя порадовало?",
-        "4. Что было трудно?",
-        "5. Какой момент ты хочешь запомнить?",
-        "6. Что изменилось в тебе или вокруг тебя?"
-      ].join("\n")
-    );
+    const lines = ["Можно ответить на любой:", "", ...PROMPT_HINTS_RU.map((p, i) => `${i + 1}. ${p}`)];
+    await ctx.reply(lines.join("\n"));
     return;
   }
-
   if (data === "entry:skip") {
     const user = await ensureTelegramUser(ctx);
-    await prisma.user.update({ where: { id: user.id }, data: { state: UserState.READY } });
-    await ctx.reply("Хорошо. Эту неделю пропускаем без чувства долга. Вернёшься, когда будет что сохранить.");
+    await prisma.user.update({ where: { id: user.id }, data: { state: "READY" } });
+    await ctx.reply("Хорошо. Эту неделю пропускаем — без чувства долга.");
     return;
   }
 
-  if (data.startsWith("onb:goal:")) {
-    await chooseGoal(ctx, data.slice("onb:goal:".length));
+  // Reminder preset (used during onboarding and from /settings)
+  if (data.startsWith("onb:rmd:")) {
+    await applyReminderPreset(ctx, data.slice("onb:rmd:".length));
     return;
   }
 
-  if (data.startsWith("onb:style:")) {
-    await chooseStyle(ctx, data.slice("onb:style:".length));
-    return;
-  }
-
-  if (data.startsWith("onb:freq:")) {
-    await chooseFrequency(ctx, data.slice("onb:freq:".length));
-    return;
-  }
-
-  if (data.startsWith("onb:day:")) {
-    await chooseReminderDay(ctx, data.slice("onb:day:".length));
-    return;
-  }
-
-  if (data.startsWith("onb:time:")) {
-    await chooseReminderTime(ctx, data.slice("onb:time:".length));
-    return;
-  }
-
-  if (data === "onb:privacy_ok") {
-    await finishOnboarding(ctx);
-    return;
-  }
-
-  if (data.startsWith("q:skip:") || data.startsWith("q:gen:")) {
-    const entryId = data.startsWith("q:skip:") ? data.slice("q:skip:".length) : data.slice("q:gen:".length);
-    await generateChapterForEntry(ctx, entryId);
-    return;
-  }
-
-  if (data.startsWith("voice:go:")) {
-    await generateQuestionsForEntry(ctx, data.slice("voice:go:".length));
-    return;
-  }
-
-  if (data.startsWith("voice:add:")) {
-    const user = await ensureTelegramUser(ctx);
-    await prisma.user.update({ where: { id: user.id }, data: { state: UserState.WAITING_FOR_WEEKLY_INPUT } });
-    await ctx.reply("Хорошо. Отправь ещё текстом или голосом, я добавлю это к новой главе.");
-    return;
-  }
-
-  if (data.startsWith("voice:cancel:")) {
-    const user = await ensureTelegramUser(ctx);
-    await prisma.entry.updateMany({ where: { id: data.slice("voice:cancel:".length), userId: user.id }, data: { status: "ARCHIVED" } });
-    await prisma.user.update({ where: { id: user.id }, data: { state: UserState.READY } });
-    await ctx.reply("Отменил. Запись не попадёт в книгу.");
-    return;
-  }
-
-  if (data.startsWith("ch:save:")) {
-    await saveReviewedChapter(ctx, data.slice("ch:save:".length));
-    return;
-  }
-
-  if (data.startsWith("ch:adj:")) {
-    const parts = data.split(":");
-    const code = parts[2] as keyof typeof ADJUSTMENT_BY_CODE | undefined;
-    const chapterId = parts[3];
-    const adjustment = code ? ADJUSTMENT_BY_CODE[code] : undefined;
-
-    if (!adjustment || !chapterId) {
-      await ctx.reply("Не понял, какую правку применить. Попробуй нажать кнопку ещё раз.");
-      return;
-    }
-
-    await adjustReviewedChapter(ctx, adjustment, chapterId);
-    return;
-  }
-
-  if (data.startsWith("preview:chapter:")) {
-    const user = await ensureTelegramUser(ctx);
-    const chapterId = data.slice("preview:chapter:".length);
-    const chapter = await prisma.chapter.findFirst({
-      where: { id: chapterId, userId: user.id },
-      select: { shareToken: true }
-    });
-
-    if (!chapter?.shareToken) {
-      await ctx.reply("Ссылка на страницу главы пока не готова.");
-      return;
-    }
-
-    await sendPreviewLink(ctx, chapterPreviewUrl(chapter.shareToken));
-    return;
-  }
-
+  // Open book preview link.
   if (data.startsWith("preview:book:")) {
     const user = await ensureTelegramUser(ctx);
     const bookId = data.slice("preview:book:".length);
     const book = await prisma.book.findFirst({
       where: { id: bookId, userId: user.id },
-      select: { id: true }
+      select: { shareToken: true }
     });
-
-    if (!book) {
-      await ctx.reply("Не нашёл эту книгу.");
+    if (!book?.shareToken) {
+      await ctx.reply("Книга появится по ссылке, как только сохранишь хотя бы одну запись.");
       return;
     }
-
-    await sendPreviewLink(ctx, `${config.PUBLIC_WEB_URL.replace(/\/$/, "")}/book/${book.id}`);
+    await ctx.reply(bookPreviewUrl(book.shareToken));
     return;
   }
 
-  if (data === "book:last") {
+  // Pro purchase — Telegram Stars invoice
+  if (data === "pay:month") return void (await startPayment(ctx, "pro_month"));
+  if (data === "pay:year")  return void (await startPayment(ctx, "pro_year"));
+  if (data === "pay:unlock") return void (await startPayment(ctx, "pro_year"));
+
+  // Pro-gated: build and send the PDF book.
+  if (data === "book:pdf") {
     const user = await ensureTelegramUser(ctx);
-    const latest = await getLatestSavedChapter(user.id);
-    if (!latest) {
-      await ctx.reply("В книге пока нет сохранённых глав.");
+    if (!isProActive(user)) {
+      await ctx.reply(paywallText(user.freeEntriesUsed), { reply_markup: paywallKeyboard() });
       return;
     }
-    const previewUrl = latest.shareToken ? chapterPreviewUrl(latest.shareToken) : undefined;
-    const keyboard = previewUrl
-      ? isTelegramInlineUrl(previewUrl)
-        ? new InlineKeyboard().url("Открыть как страницу книги", previewUrl)
-        : new InlineKeyboard().text("Открыть как страницу книги", `preview:chapter:${latest.id}`)
-      : undefined;
-    const message = [`Глава: ${latest.title}`, "", latest.quote ? `“${latest.quote}”` : "", "", latest.content].join("\n");
-    if (keyboard) {
-      await ctx.reply(message, { reply_markup: keyboard });
-    } else {
-      await ctx.reply(message);
+    await ctx.reply("Собираю книгу. Пара секунд.");
+    try {
+      const built = await buildBookPdfForUser(user.id);
+      if (!built) {
+        await ctx.reply("Пока нечего складывать в книгу. Запиши хотя бы одну страницу.");
+        return;
+      }
+      await ctx.replyWithDocument(new InputFile(built.filePath, "lifebook.pdf"));
+    } catch (err) {
+      logger.warn({ err }, "PDF build failed");
+      await ctx.reply("Не получилось собрать PDF. Попробуй ещё раз через минуту.");
     }
     return;
   }
 
-  if (data === "set:style") {
-    const user = await ensureTelegramUser(ctx);
-    await prisma.user.update({ where: { id: user.id }, data: { state: UserState.ONBOARDING_STYLE } });
-    await ctx.reply("Выбери новый стиль книги.", { reply_markup: styleKeyboard() });
-    return;
-  }
-
-  if (data === "set:reminders") {
-    const user = await ensureTelegramUser(ctx);
-    await prisma.user.update({ where: { id: user.id }, data: { state: UserState.ONBOARDING_FREQUENCY } });
-    await ctx.reply("Как часто напоминать тебе написать новую главу?", { reply_markup: frequencyKeyboard() });
-    return;
-  }
-
+  // Settings — minimum: just reminder presets (handled via onb:rmd above) and /book.
   if (data === "set:privacy") {
-    await ctx.reply("Главы приватны по умолчанию. Публичной становится только ссылка с длинным приватным токеном, если ты сам её отправишь.");
+    await ctx.reply(
+      "Все записи приватны. Книга открывается только по твоей ссылке с длинным секретным токеном — никаких списков, никакой публичной ленты."
+    );
     return;
   }
 
-  if (data === "set:delete_last") {
-    await ctx.reply("Удалить последнюю сохранённую главу? Это действие нельзя отменить.", { reply_markup: confirmDeleteKeyboard() });
+  // Legacy callbacks from prior versions — silently absorb so old buttons don't error.
+  if (
+    data.startsWith("q:") ||
+    data.startsWith("voice:") ||
+    data.startsWith("ch:") ||
+    data.startsWith("chap:") ||
+    data.startsWith("preview:chapter:") ||
+    data.startsWith("preview:page:") ||
+    data.startsWith("share:") ||
+    data.startsWith("onb:goal:") ||
+    data.startsWith("onb:style:") ||
+    data.startsWith("onb:freq:") ||
+    data.startsWith("onb:day:") ||
+    data.startsWith("onb:time:") ||
+    data === "onb:privacy_ok" ||
+    data === "set:style" ||
+    data === "set:reminders" ||
+    data === "set:delete_last" ||
+    data === "delete:last:yes" ||
+    data === "delete:last:no" ||
+    data === "menu:export" ||
+    data === "start:onboarding" ||
+    data === "start:example" ||
+    data === "start:how"
+  ) {
+    await ctx.reply("Просто отправь мне следующую запись — я допишу страницу.");
     return;
   }
 
-  if (data === "delete:last:no") {
-    await ctx.reply("Оставил всё как есть.");
-    return;
-  }
-
-  if (data === "delete:last:yes") {
-    const user = await ensureTelegramUser(ctx);
-    const deleted = await deleteLatestSavedChapter(user.id);
-    await ctx.reply(deleted ? `Удалил главу “${deleted.title}”.` : "Сохранённых глав пока нет.");
-    return;
-  }
-
-  if (data === "pay:unlock") {
-    await startPayment(ctx);
-    return;
-  }
-
-  await ctx.reply("Эта кнопка устарела. Открой главное меню через /start.");
+  await ctx.reply("Эта кнопка устарела. /start вернёт в главное меню.");
 }
 
-async function sendPreviewLink(ctx: Context, previewUrl: string): Promise<void> {
-  if (isTelegramInlineUrl(previewUrl)) {
-    await ctx.reply(`Страница книги: ${previewUrl}`);
-    return;
-  }
-
-  await ctx.reply(
-    [
-      "Это локальная ссылка для разработки.",
-      "",
-      previewUrl,
-      "",
-      "Telegram не открывает localhost в inline-кнопках. Открой ссылку в браузере на этом же компьютере или поставь PUBLIC_WEB_URL на публичный https URL через ngrok/Cloudflare Tunnel."
-    ].join("\n")
-  );
-}
-
-async function sendExample(ctx: Context): Promise<void> {
-  await ctx.reply(
-    [
-      "Вот как это работает.",
-      "",
-      "Ты пишешь:",
-      "“Неделя была странная. Много работал, устал. В пятницу поговорил с мамой, стало легче. В субботу понял, что хочу запустить свой проект.”",
-      "",
-      "Я превращаю это в главу:",
-      "",
-      "Глава 1. Неделя, когда я начал слышать себя",
-      "",
-      "Эта неделя не выглядела как начало чего-то важного. Скорее наоборот — она была уставшей, немного размытой, полной обычных задач и коротких пауз между ними..."
-    ].join("\n")
-  );
-}
-
-async function startPayment(ctx: Context): Promise<void> {
+async function startPayment(ctx: Context, key: keyof typeof PRODUCT_CATALOG): Promise<void> {
+  const product = PRODUCT_CATALOG[key];
   const user = await ensureTelegramUser(ctx);
-  track("payment_started", { userId: user.id });
+  track("payment_started", { userId: user.id, productCode: product.code });
 
   await prisma.payment.create({
     data: {
       userId: user.id,
       currency: "XTR",
-      amount: 500,
-      productCode: "lifebook_pro_month",
+      amount: product.amountStars,
+      productCode: product.code,
       status: "PENDING"
     }
   });
 
-  if (!ctx.chat) {
+  if (!ctx.chat) return;
+
+  if (!findProductByCode(product.code)) {
+    await ctx.reply("Этот тариф пока недоступен. Попробуй позже.");
     return;
   }
 
-  await ctx.api.sendInvoice(ctx.chat.id, "LifeBook Pro", "Безлимитные главы, голосовые, память, карточки и PDF-экспорт.", `pro:${user.id}:${Date.now()}`, "XTR", [
-    { label: "LifeBook Pro", amount: 500 }
-  ]);
+  const payload = `${product.code}:${user.id}:${Date.now()}`;
+  await ctx.api.sendInvoice(
+    ctx.chat.id,
+    product.label,
+    product.description,
+    payload,
+    "XTR",
+    [{ label: product.label, amount: product.amountStars }]
+  );
 }

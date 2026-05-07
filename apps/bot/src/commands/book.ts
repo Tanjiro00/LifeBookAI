@@ -1,52 +1,74 @@
 import type { Context } from "grammy";
-import { InlineKeyboard } from "grammy";
-import { config } from "../config.js";
+import { InlineKeyboard, InputFile } from "grammy";
+import { join } from "node:path";
 import { ensureTelegramUser } from "../services/userService.js";
-import { getBookSummary, getLatestSavedChapter } from "../services/bookService.js";
-import { formatDateRange } from "../services/formatting.js";
-import { chapterPreviewUrl } from "../services/storage.js";
+import { bookPreviewUrl } from "../services/storage.js";
+import { isProActive } from "../services/subscriptions.js";
 import { track } from "../services/analytics.js";
 import { isTelegramInlineUrl } from "../services/urls.js";
+import { paths } from "../config.js";
+import { prisma } from "../lib/db.js";
 
+const TOTAL_SLOTS = 52;
+
+// /book — single layout regardless of state. Cover (or simple placeholder) + 2 buttons.
 export async function sendBook(ctx: Context): Promise<void> {
   const user = await ensureTelegramUser(ctx);
-  const summary = await getBookSummary(user.id);
-  const latest = await getLatestSavedChapter(user.id);
   track("book_opened", { userId: user.id });
 
-  const recent = summary.savedChapters.length
-    ? summary.savedChapters.map((chapter, index) => `${index + 1}. ${chapter.title}`).join("\n")
-    : "Пока нет сохранённых глав.";
+  const [book, count] = await Promise.all([
+    prisma.book.findFirst({
+      where: { userId: user.id },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, title: true, aiTitle: true, coverUrl: true, shareToken: true }
+    }),
+    prisma.page.count({ where: { userId: user.id } })
+  ]);
 
-  const keyboard = new InlineKeyboard();
-  if (latest?.shareToken) {
-    const url = chapterPreviewUrl(latest.shareToken);
-    if (isTelegramInlineUrl(url)) {
-      keyboard.url("Открыть красивую версию", url).row();
-    } else {
-      keyboard.text("Открыть красивую версию", `preview:chapter:${latest.id}`).row();
-    }
-  } else if (summary.book) {
-    const url = `${config.PUBLIC_WEB_URL.replace(/\/$/, "")}/book/${summary.book.id}`;
-    if (isTelegramInlineUrl(url)) {
-      keyboard.url("Открыть красивую версию", url).row();
-    } else {
-      keyboard.text("Открыть красивую версию", `preview:book:${summary.book.id}`).row();
+  if (count === 0) {
+    await ctx.reply(
+      "Книга пока пустая. Расскажи момент — текстом или голосом, я открою первую страницу.",
+      { reply_markup: new InlineKeyboard().text("Новая запись", "menu:new") }
+    );
+    return;
+  }
+
+  const title = book?.aiTitle || book?.title || "Книга твоего года";
+  const counter = `${count} из ${TOTAL_SLOTS} записей · книга готова к ${shipDate()}`;
+
+  const kb = new InlineKeyboard();
+  if (book?.shareToken) {
+    const url = bookPreviewUrl(book.shareToken);
+    if (isTelegramInlineUrl(url)) kb.url("Открыть книгу", url);
+    else kb.text("Открыть книгу", `preview:book:${book.id}`);
+  }
+  kb.text("Новая запись", "menu:new");
+  if (isProActive(user)) {
+    kb.row().text("Скачать PDF", "book:pdf");
+  } else {
+    kb.row().text("Pro · 2900 ⭐ за год", "pay:year");
+  }
+
+  // Use the AI cover if it exists. Read from disk via InputFile — cover URL is for the
+  // browser, but Telegram fetches photos from URLs and can't reach localhost in dev.
+  if (book?.coverUrl) {
+    try {
+      const coverPath = join(paths.storageDir, "covers", `${book.id}.png`);
+      await ctx.replyWithPhoto(new InputFile(coverPath), {
+        caption: `${title}\n${counter}`,
+        reply_markup: kb
+      });
+      return;
+    } catch {
+      // File missing — fall through to text card.
     }
   }
-  keyboard.text("Последняя глава", "book:last").text("Экспорт PDF", "menu:export").row().text("Новая глава", "menu:new");
 
-  await ctx.reply(
-    [
-      "📚 Твоя книга",
-      "",
-      `Название: ${summary.book?.title || "Год, когда я стал собой"}`,
-      `Глав: ${summary.count} из 52`,
-      `Период: ${formatDateRange(summary.periodStart, summary.periodEnd)}`,
-      "",
-      "Последние главы:",
-      recent
-    ].join("\n"),
-    { reply_markup: keyboard }
-  );
+  await ctx.reply([title, counter].join("\n"), { reply_markup: kb });
+}
+
+function shipDate(): string {
+  const year = new Date().getFullYear();
+  // Show only year if we are past December — otherwise pin to Dec 7 of current year.
+  return `7 декабря ${year}`;
 }

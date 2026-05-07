@@ -1,4 +1,5 @@
 import { Bot, GrammyError, HttpError } from "grammy";
+import { EntryStatus, UserState } from "@prisma/client";
 import { config } from "./config.js";
 import { sendBook } from "./commands/book.js";
 import { sendHelp } from "./commands/help.js";
@@ -12,7 +13,7 @@ import { handleSuccessfulPayment, handlePreCheckoutQuery } from "./handlers/paym
 import { handleTextMessage } from "./handlers/textMessage.js";
 import { handleVoiceMessageUpdate } from "./handlers/voiceMessage.js";
 import { ensureTelegramUser } from "./services/userService.js";
-import { deleteLatestSavedChapter } from "./services/chapterService.js";
+import { deleteLatestPage } from "./services/chapterService.js";
 import { prisma } from "./lib/db.js";
 import { logger } from "./lib/logger.js";
 import { rateLimit } from "./lib/rateLimit.js";
@@ -29,23 +30,25 @@ export function createBot(): Bot {
   bot.command("help", sendHelp);
   bot.command("privacy", sendPrivacy);
   bot.command("paysupport", sendPaySupport);
-  bot.command("remind", sendSettings);
-  bot.command("style", async (ctx) => {
-    await ctx.reply("Открой настройки и выбери новый стиль книги.");
-    await sendSettings(ctx);
-  });
-  bot.command("export", async (ctx) => {
-    await ctx.reply("Экспорт PDF подготовлен как следующий шаг. Сейчас можно открывать главы как красивые страницы книги.");
-  });
+
   bot.command("delete_last", async (ctx) => {
     const user = await ensureTelegramUser(ctx);
-    const deleted = await deleteLatestSavedChapter(user.id);
-    await ctx.reply(deleted ? `Удалил последнюю главу: “${deleted.title}”.` : "Сохранённых глав пока нет.");
+    const deleted = await deleteLatestPage(user.id);
+    await ctx.reply(deleted ? `Удалил запись «${deleted.sceneTitle}».` : "Записей пока нет.");
   });
+
   bot.command("cancel", async (ctx) => {
     const user = await ensureTelegramUser(ctx);
-    await prisma.user.update({ where: { id: user.id }, data: { state: "READY" } });
-    await ctx.reply("Остановил текущий сценарий. Можно начать новую главу через /new.");
+    // Archive any in-flight raw entries so they don't dangle.
+    await prisma.entry.updateMany({
+      where: {
+        userId: user.id,
+        status: { in: [EntryStatus.DRAFT, EntryStatus.COLLECTED, EntryStatus.QUESTIONS_GENERATED, EntryStatus.ANSWERS_COLLECTED] }
+      },
+      data: { status: EntryStatus.ARCHIVED }
+    });
+    await prisma.user.update({ where: { id: user.id }, data: { state: UserState.READY } });
+    await ctx.reply("Остановил. /new — начать новую запись.");
   });
 
   bot.callbackQuery(/.*/, handleCallbackQuery);
@@ -57,18 +60,15 @@ export function createBot(): Bot {
   bot.catch((error) => {
     const ctx = error.ctx;
     const err = error.error;
-
     if (err instanceof GrammyError) {
-      logger.error({ err, updateId: ctx.update.update_id }, "Telegram API error");
+      logger.error({ err: { message: err.message, code: err.error_code }, updateId: ctx.update.update_id }, "Telegram API error");
       return;
     }
-
     if (err instanceof HttpError) {
-      logger.error({ err, updateId: ctx.update.update_id }, "Telegram network error");
+      logger.error({ err: { message: err.message }, updateId: ctx.update.update_id }, "Telegram network error");
       return;
     }
-
-    logger.error({ err, updateId: ctx.update.update_id }, "Unexpected bot error");
+    logger.error({ err: { message: (err as Error).message }, updateId: ctx.update.update_id }, "Unexpected bot error");
   });
 
   return bot;
@@ -76,17 +76,14 @@ export function createBot(): Bot {
 
 export async function setBotCommands(bot: Bot): Promise<void> {
   await bot.api.setMyCommands([
-    { command: "start", description: "начать или открыть главное меню" },
-    { command: "new", description: "написать новую главу" },
-    { command: "book", description: "моя книга" },
-    { command: "settings", description: "настройки" },
-    { command: "help", description: "помощь" },
-    { command: "privacy", description: "приватность" },
-    { command: "paysupport", description: "поддержка по платежам" },
-    { command: "export", description: "экспорт книги" },
-    { command: "delete_last", description: "удалить последнюю главу" },
-    { command: "remind", description: "изменить напоминания" },
-    { command: "style", description: "изменить стиль письма" }
+    { command: "start",       description: "начать книгу твоего года" },
+    { command: "new",         description: "записать момент" },
+    { command: "book",        description: "моя книга" },
+    { command: "settings",    description: "напоминания и план" },
+    { command: "help",        description: "как это работает" },
+    { command: "privacy",     description: "приватность" },
+    { command: "paysupport",  description: "поддержка по платежам" },
+    { command: "delete_last", description: "удалить последнюю запись" },
+    { command: "cancel",      description: "выйти из текущего сценария" }
   ]);
 }
-

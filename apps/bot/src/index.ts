@@ -18,22 +18,24 @@ async function main(): Promise<void> {
   const server = createServer(bot);
   await server.listen({ port: config.PORT, host: "0.0.0.0" });
 
-  let reminderTimer: NodeJS.Timeout | undefined;
+  // Reminder loop runs in both modes — production uses webhook and still needs reminders.
+  const reminderTimer = startReminderLoop(bot);
   let runner: ReturnType<typeof run> | undefined;
 
   if (config.BOT_MODE === "webhook") {
     if (!config.BOT_WEBHOOK_URL) {
       throw new Error("BOT_WEBHOOK_URL is required in webhook mode.");
     }
-    const webhookUrl = `${config.BOT_WEBHOOK_URL.replace(/\/$/, "")}/telegram/${config.TELEGRAM_WEBHOOK_SECRET || "webhook"}`;
+    const webhookUrl = `${config.BOT_WEBHOOK_URL.replace(/\/$/, "")}/telegram/webhook`;
     await bot.api.setWebhook(
       webhookUrl,
       config.TELEGRAM_WEBHOOK_SECRET ? { secret_token: config.TELEGRAM_WEBHOOK_SECRET } : {}
     );
     logger.info({ webhookUrl }, "LifeBook Bot webhook is ready");
   } else {
+    // If a webhook was previously registered, polling will conflict with it.
+    await bot.api.deleteWebhook({ drop_pending_updates: false }).catch(() => undefined);
     runner = run(bot);
-    reminderTimer = startReminderLoop(bot);
     logger.info({ port: config.PORT }, "LifeBook Bot polling is ready");
   }
 

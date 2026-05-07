@@ -1,85 +1,179 @@
-import { escapeHtml } from "./text.js";
+import PDFDocument from "pdfkit";
+import { Readable } from "node:stream";
 
-export type ChapterPdfInput = {
+// 5.5" × 8.25" trade-paper book trim, in PDF points (72/inch).
+const PAGE_W = 5.5 * 72;
+const PAGE_H = 8.25 * 72;
+const MARGIN = 0.6 * 72;
+const INK = "#1E1B18";
+const INK_SOFT = "#5D5147";
+const INK_FAINT = "#76685D";
+const BRONZE = "#9A6A43";
+const PAPER = "#F8F4EC";
+
+export type BookEntryPdfInput = {
   title: string;
-  subtitle?: string | null;
+  body: string;
   quote?: string | null;
-  content: string;
-  createdAt?: Date;
+  createdAt: Date;
 };
 
-export function renderChapterHtml(input: ChapterPdfInput): string {
-  const paragraphs = input.content
-    .split(/\n{2,}/)
-    .map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`)
-    .join("\n");
+export type BookPdfInput = {
+  bookTitle: string;
+  authorName?: string | null | undefined;
+  subtitle?: string | null;
+  year: number;
+  entries: BookEntryPdfInput[];
+  coverPngBuffer?: Buffer | null;
+};
 
-  return `<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(input.title)}</title>
-  <style>
-    :root { color-scheme: light; }
-    body {
-      margin: 0;
-      background: #f8f4ec;
-      color: #1e1b18;
-      font-family: Georgia, "Times New Roman", serif;
-    }
-    main {
-      max-width: 760px;
-      margin: 0 auto;
-      padding: 80px 48px 96px;
-      background: #fffaf3;
-      min-height: 100vh;
-      box-shadow: 0 24px 80px rgba(30, 27, 24, 0.12);
-    }
-    .meta {
-      color: #9a6a43;
-      font-family: Arial, sans-serif;
-      font-size: 13px;
-      letter-spacing: .14em;
-      text-transform: uppercase;
-    }
-    h1 {
-      font-size: 52px;
-      line-height: 1.05;
-      margin: 32px 0 16px;
-      letter-spacing: 0;
-    }
-    h2 {
-      font-size: 22px;
-      font-weight: 400;
-      color: #5d5147;
-      margin: 0 0 36px;
-    }
-    blockquote {
-      border-left: 2px solid #9a6a43;
-      color: #423a33;
-      font-style: italic;
-      margin: 0 0 42px;
-      padding-left: 24px;
-      font-size: 23px;
-      line-height: 1.55;
-    }
-    p {
-      font-size: 20px;
-      line-height: 1.78;
-      margin: 0 0 24px;
-    }
-  </style>
-</head>
-<body>
-  <main>
-    <div class="meta">LifeBook${input.createdAt ? ` · ${escapeHtml(input.createdAt.toLocaleDateString("ru-RU"))}` : ""}</div>
-    <h1>${escapeHtml(input.title)}</h1>
-    ${input.subtitle ? `<h2>${escapeHtml(input.subtitle)}</h2>` : ""}
-    ${input.quote ? `<blockquote>${escapeHtml(input.quote)}</blockquote>` : ""}
-    ${paragraphs}
-  </main>
-</body>
-</html>`;
+const MONTHS_RU = [
+  "января","февраля","марта","апреля","мая","июня",
+  "июля","августа","сентября","октября","ноября","декабря"
+];
+
+function formatDate(d: Date): string {
+  return `${d.getDate()} ${MONTHS_RU[d.getMonth()]} ${d.getFullYear()}`;
 }
 
+function newPage(doc: InstanceType<typeof PDFDocument>): void {
+  doc.addPage({ size: [PAGE_W, PAGE_H], margins: { top: MARGIN, bottom: MARGIN, left: MARGIN, right: MARGIN } });
+  doc.rect(0, 0, PAGE_W, PAGE_H).fill(PAPER);
+}
+
+// Simple multi-page book. Cover + title page + month-grouped TOC + each entry as a
+// chapter page. PDFKit's text wrapping handles reflow within a single page; entries
+// longer than a page flow naturally.
+export async function renderBookPdf(input: BookPdfInput): Promise<Buffer> {
+  const doc = new PDFDocument({
+    size: [PAGE_W, PAGE_H],
+    margins: { top: MARGIN, bottom: MARGIN, left: MARGIN, right: MARGIN },
+    autoFirstPage: false,
+    info: {
+      Title: input.bookTitle,
+      Author: input.authorName || "LifeBook",
+      Subject: `Personal autobiography ${input.year}`
+    }
+  });
+
+  // ---- COVER ----
+  doc.addPage({ size: [PAGE_W, PAGE_H], margin: 0 });
+  doc.rect(0, 0, PAGE_W, PAGE_H).fill(PAPER);
+  if (input.coverPngBuffer) {
+    try {
+      doc.image(input.coverPngBuffer, 0, 0, { width: PAGE_W, height: PAGE_H });
+      // Title overlay band at the bottom for readability.
+      doc.rect(0, PAGE_H - 1.6 * 72, PAGE_W, 1.6 * 72).fillOpacity(0.9).fill(PAPER);
+      doc.fillOpacity(1);
+    } catch {
+      // Fall through to typographic cover.
+    }
+  }
+  doc.fillColor(BRONZE).font("Times-Roman").fontSize(11);
+  doc.text("LIFEBOOK", 0, PAGE_H - 1.4 * 72, { align: "center", width: PAGE_W, characterSpacing: 4 });
+  doc.fillColor(INK).font("Times-Bold").fontSize(28);
+  doc.text(input.bookTitle, MARGIN, PAGE_H - 1.05 * 72, {
+    width: PAGE_W - MARGIN * 2,
+    align: "center"
+  });
+  if (input.subtitle) {
+    doc.font("Times-Italic").fontSize(13).fillColor(INK_SOFT);
+    doc.text(input.subtitle, MARGIN, PAGE_H - 0.55 * 72, {
+      width: PAGE_W - MARGIN * 2,
+      align: "center"
+    });
+  }
+  doc.font("Times-Roman").fontSize(10).fillColor(INK_FAINT);
+  doc.text(String(input.year), 0, PAGE_H - 0.3 * 72, { align: "center", width: PAGE_W, characterSpacing: 4 });
+
+  // ---- TITLE PAGE ----
+  newPage(doc);
+  doc.fillColor(BRONZE).font("Times-Roman").fontSize(10).text("LIFEBOOK", { align: "center", characterSpacing: 6 });
+  doc.moveDown(8);
+  doc.fillColor(INK).font("Times-Bold").fontSize(26).text(input.bookTitle, { align: "center" });
+  doc.moveDown(0.6);
+  if (input.subtitle) {
+    doc.font("Times-Italic").fontSize(14).fillColor(INK_SOFT).text(input.subtitle, { align: "center" });
+  }
+  doc.moveDown(2);
+  doc.font("Times-Roman").fontSize(11).fillColor(INK_FAINT)
+     .text(`${input.entries.length} записей · ${input.year}`, { align: "center" });
+  if (input.authorName) {
+    doc.moveDown(8);
+    doc.font("Times-Roman").fontSize(13).fillColor(INK).text(input.authorName, { align: "center" });
+  }
+
+  // ---- TABLE OF CONTENTS (by month) ----
+  newPage(doc);
+  doc.fillColor(BRONZE).font("Times-Roman").fontSize(10).text("СОДЕРЖАНИЕ", { characterSpacing: 6 });
+  doc.moveDown(2);
+  const byMonth = new Map<string, BookEntryPdfInput[]>();
+  for (const e of input.entries) {
+    const key = `${e.createdAt.getFullYear()}-${String(e.createdAt.getMonth() + 1).padStart(2, "0")}`;
+    const arr = byMonth.get(key) || [];
+    arr.push(e);
+    byMonth.set(key, arr);
+  }
+  for (const [key, items] of byMonth) {
+    const monthIdx = Number(key.split("-")[1]) - 1;
+    const monthLabel = MONTHS_RU[monthIdx]!;
+    doc.font("Times-Bold").fontSize(13).fillColor(INK).text(monthLabel.toUpperCase());
+    for (const e of items) {
+      doc.font("Times-Roman").fontSize(11).fillColor(INK_SOFT)
+         .text(`   ${e.title}`, { lineBreak: true });
+    }
+    doc.moveDown(0.5);
+  }
+
+  // ---- ENTRIES ----
+  for (const entry of input.entries) {
+    newPage(doc);
+    // Date stamp
+    doc.fillColor(BRONZE).font("Times-Roman").fontSize(9)
+       .text(formatDate(entry.createdAt).toUpperCase(), { characterSpacing: 4 });
+    doc.moveDown(2);
+    // Title
+    doc.fillColor(INK).font("Times-Bold").fontSize(20).text(entry.title);
+    doc.moveDown(1);
+    // Optional quote — italic, indented.
+    if (entry.quote) {
+      doc.font("Times-Italic").fontSize(12).fillColor(INK_SOFT)
+         .text(`«${entry.quote.replace(/[“”"]/g, "")}»`, {
+           indent: 16,
+           paragraphGap: 8
+         });
+      doc.moveDown(0.6);
+    }
+    // Body
+    doc.font("Times-Roman").fontSize(11.5).fillColor(INK)
+       .text(entry.body, {
+         align: "left",
+         paragraphGap: 6,
+         lineGap: 2
+       });
+  }
+
+  // ---- COLOPHON ----
+  newPage(doc);
+  doc.moveDown(15);
+  doc.fillColor(INK_FAINT).font("Times-Italic").fontSize(11)
+     .text(`— конец книги —`, { align: "center" });
+  doc.moveDown(2);
+  doc.fillColor(BRONZE).font("Times-Roman").fontSize(9)
+     .text("Написано с LifeBook", { align: "center", characterSpacing: 4 });
+
+  // Collect to buffer
+  const chunks: Buffer[] = [];
+  doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+  doc.end();
+  await new Promise<void>((resolve, reject) => {
+    doc.on("end", () => resolve());
+    doc.on("error", reject);
+  });
+  return Buffer.concat(chunks);
+}
+
+// Convenience: convert a Buffer-yielding promise to a Readable stream when callers want it.
+export function bookPdfStream(buffer: Buffer): Readable {
+  return Readable.from(buffer);
+}

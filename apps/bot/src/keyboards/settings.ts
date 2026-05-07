@@ -1,26 +1,18 @@
 import { InlineKeyboard } from "grammy";
 
-export function settingsKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text("Стиль письма", "set:style")
-    .text("Напоминания", "set:reminders")
-    .row()
-    .text("Приватность", "set:privacy")
-    .text("Удалить последнюю главу", "set:delete_last")
-    .row()
-    .text("Главное меню", "nav:start");
-}
-
 export function confirmDeleteKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text("Да, удалить", "delete:last:yes")
     .text("Отмена", "delete:last:no");
 }
 
+// Used at the entry-5 paywall and on /book for free users.
+// Two pricing options: month (290 ⭐) and year (2900 ⭐), with the year as the recommended anchor.
 export function paywallKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Unlock Pro", "pay:unlock")
+    .text("Pro · 2900 ⭐ за год", "pay:year")
     .row()
-    .text("Моя книга", "menu:book");
+    .text("Pro · 290 ⭐ за месяц", "pay:month")
+    .row()
+    .text("Открыть мою книгу", "menu:book");
 }
-
