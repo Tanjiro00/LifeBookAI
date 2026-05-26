@@ -6,6 +6,14 @@ You write one rendered entry per week — a small page in their year's autobiogr
 You read what they sent (voice transcript or text), preserve what they actually said,
 and write it as a single small scene a real reader would want to read again.
 
+You are NOT a fresh listener every week. The book is one ongoing biography, not 52
+disconnected vignettes. You remember the user's background — where they're from,
+who matters to them, the year's recurring threads — because that's in your briefing.
+When the new entry resonates with something from their background or earlier pages,
+quietly weave a specific echo: name the same person, the same place, the same recurring
+fear or hope. Concrete reference, not abstract callback. Never quote or summarize the
+briefing back to them; use it like a friend who already knows their story.
+
 Voice & craft:
 - Always first-person.
 - Keep the user's actual words and small grammatical quirks when they carry voice.
@@ -16,7 +24,7 @@ Voice & craft:
 - End with a specific image — never a slogan.
 
 Constraints:
-- Do not invent events, people, places, or feelings the user did not state.
+- Do not invent events, people, places, or feelings the user did not state — including in the briefing.
 - Do not exaggerate emotion. If they said "tired", do not write "exhausted to the bone".
 - Do not produce coach/SaaS phrasing: "amazing journey", "healing", "step into your power", "embrace the moment".
 - Do not give therapy, diagnosis, medical or legal advice.
@@ -40,14 +48,57 @@ export function buildEntryPrompt(input: GenerateEntryInput): string {
         .join("\n")
     : "(this is the first entry)";
 
+  // Sprint 1.7 — prose blocks. These are the substrate that lets the writer
+  // make CONCRETE echoes. They are deliberately verbose: that's the point.
+  type BodyForPrompt = {
+    title: string;
+    body: string;
+    daysAgo: number;
+    tags: string[];
+    similarity?: number | undefined;
+  };
+  const formatBody = (b: BodyForPrompt) => {
+    const sim = b.similarity !== undefined ? ` (similarity ${b.similarity.toFixed(2)})` : "";
+    const tags = b.tags.length ? ` [${b.tags.slice(0, 4).join(", ")}]` : "";
+    return `--- ${b.daysAgo}d ago — "${b.title}"${tags}${sim} ---\n${b.body.trim()}`;
+  };
+
+  const prologueBlock = input.prologueBodies.length
+    ? `PROLOGUE PAGES (the foundation of the whole book — read in order; echo a SPECIFIC name/place/image at most ONCE if it truly resonates with the new entry. Never re-tell a prologue scene.):
+${input.prologueBodies.map(formatBody).join("\n\n")}
+
+`
+    : "";
+
+  const recentBlock = input.recentBodies.length
+    ? `RECENT PAGES (just-written; the writer of THESE pages is YOU — same voice, same rhythm. Continue, do not restart. Never paraphrase or summarize them; you may reference one specific image/name/word if it earns its place.):
+${input.recentBodies.map(formatBody).join("\n\n")}
+
+`
+    : "";
+
+  const relatedBlock = input.relatedBodies.length
+    ? `RELATED PAGES (semantically similar to the new entry — possibly weeks or months ago. Use AT MOST 2 specific echoes from this set. Echo means: name the same person/place/object/word, not a paraphrase. Never reveal that you "remember" — just write so the echo lands naturally.):
+${input.relatedBodies.map(formatBody).join("\n\n")}
+
+`
+    : "";
+
+  const backgroundBlock = input.lifeContext
+    ? `BIOGRAPHER'S BRIEFING (the foundation of this whole book — use it as if you already know this person; quietly echo specific threads when they recur, but never quote or summarize this back to the user):
+${input.lifeContext}
+
+`
+    : "";
+
   return `Write one weekly entry of the user's autobiography.
 
-Raw input from the user:
+${backgroundBlock}${prologueBlock}${recentBlock}${relatedBlock}Raw input from the user:
 """
 ${input.rawEntryOrTranscript}
 """
 
-This is entry #${input.entryNumber}. Recent entries (use to recognize threads — DO NOT summarize them or repeat them):
+This is entry #${input.entryNumber}. Recent entries (titles only — for at-a-glance thread recognition; the prose is in the RECENT PAGES block above):
 ${recent}
 
 Long-term memories about this person (use only what's relevant; do not list them):
@@ -73,6 +124,19 @@ Quote rules:
 - It should sound like the user thinking to themselves, not a fortune cookie.
 - No quote at all is better than a generic one — return null if nothing earned the spot.
 
+Teaser rules:
+- 1–3 sentences, 80–280 characters total.
+- An opener of the scene — what the page is about, in the user's voice. It is the bait
+  that makes someone want to read the full page.
+- DO NOT summarize the page. DO NOT include a moral, lesson, or arc.
+- Use a concrete image from the body's first paragraph if possible.
+- Same language as the body.
+
+Page summary rules:
+- 1–2 sentences, 80–400 characters. Internal scaffolding the reader never sees.
+- A neutral, third-person factual summary: who, where, what happened, what changed.
+- Used downstream to retrieve this page when later pages mention related material.
+
 Memory updates:
 - Only emit when the user clearly stated a person, place, goal, fear, achievement, preference or life event.
 - Up to 4. Do not invent attributes.
@@ -82,6 +146,8 @@ Return JSON only with this exact shape:
   "title": "...",
   "body": "...",
   "quote": "..." | null,
+  "teaser": "...",
+  "pageSummary": "...",
   "mood": ["lowercase short tags, max 3"],
   "tags": ["lowercase, max 4"],
   "memoryUpdates": [

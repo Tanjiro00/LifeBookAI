@@ -19,6 +19,18 @@ model User {
   onboardingDone    Boolean           @default(false)
   writingGoal       String?
   writingStyle      String?
+  // Sprint 5 — voice calibration. styleSample is a 2-3 sentence exemplar of
+  // the user's preferred prose voice (set during onboarding from a chooser
+  // of pre-written examples). styleRecalibration is a periodic note from
+  // the auditor describing observed drift. narrativeCompass is the
+  // central question of the year as the user named it.
+  styleSample       String?
+  styleRecalibration String?
+  narrativeCompass  String?
+  // Sprint 5.7 — soft-delete grace period. When the user issues
+  // /delete_account we set deletionRequestedAt; a daily job (out-of-scope of
+  // this sprint, but the field is in place) hard-deletes after 7 days.
+  deletionRequestedAt DateTime?
   reminderFrequency ReminderFrequency @default(WEEKLY)
   reminderDay       Int?
   reminderTime      String?
@@ -27,6 +39,11 @@ model User {
   freeEntriesUsed   Int               @default(0)
   lastReminderAt    DateTime?
   lastCatchupAt     DateTime?
+  followupEnabled   Boolean           @default(true)
+  streakWeeks       Int               @default(0)
+  lastEntryWeekStart DateTime?
+  lifeContext       String?
+  lifeContextUpdatedAt DateTime?
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 
@@ -36,29 +53,36 @@ model User {
   memories          Memory[]
   payments          Payment[]
   pages             Page[]
+  narrativeThreads  NarrativeThread[]
+  bookParts         BookPart[]      @relation("UserBookParts")
 
   @@index([state])
   @@index([reminderFrequency, reminderDay, reminderTime])
 }
 
 model Entry {
-  id              String                  @id @default(uuid())
-  userId          String
-  user            User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  rawText         String?
-  telegramVoiceId String?
-  audioUrl        String?
-  transcript      String?
-  mood            String?
-  periodStart     DateTime?
-  periodEnd       DateTime?
-  status          EntryStatus             @default(DRAFT)
-  createdAt       DateTime                @default(now())
-  updatedAt       DateTime                @updatedAt
+  id                  String                  @id @default(uuid())
+  userId              String
+  user                User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rawText             String?
+  telegramVoiceId     String?
+  audioUrl            String?
+  transcript          String?
+  transcriptConfirmed Boolean                 @default(false)
+  finalInputText      String?
+  entryType           EntryType               @default(WEEKLY)
+  mood                String?
+  periodStart         DateTime?
+  periodEnd           DateTime?
+  status              EntryStatus             @default(DRAFT)
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
 
-  questions       ClarificationQuestion[]
-  chapter         Chapter?
-  page            Page?
+  questions           ClarificationQuestion[]
+  chapter             Chapter?
+  // One Entry can have multiple Page versions (Sprint 2 versioning). The
+  // currently-displayed page is the one with isCurrent=true.
+  pages               Page[]
 
   @@index([userId, createdAt])
   @@index([status])
@@ -68,27 +92,52 @@ model Entry {
 // note. They are auto-saved as soon as an entry comes in, and accumulate until enough
 // material exists to synthesize a real Chapter from several of them.
 model Page {
-  id             String   @id @default(uuid())
-  userId         String
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  entryId        String   @unique
-  entry          Entry    @relation(fields: [entryId], references: [id], onDelete: Cascade)
-  chapterId      String?
-  chapter        Chapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
-  sceneTitle     String
-  sceneContent   String
-  quote          String?
-  biographerNote String?
-  mood           String[] @default([])
-  tags           String[] @default([])
-  accentColor    String?
-  cardImageUrl   String?
-  shareToken     String?  @unique
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Sprint 2.6 — entryId is no longer @unique because revisions reuse the
+  // same Entry across page versions. The "active" page for an entry is the
+  // row with isCurrent=true.
+  entryId         String
+  entry           Entry    @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  chapterId       String?
+  chapter         Chapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+  sceneTitle      String
+  sceneContent    String
+  quote           String?
+  biographerNote  String?
+  teaser          String?
+  summary         String?
+  mood            String[] @default([])
+  tags            String[] @default([])
+  accentColor     String?
+  cardImageUrl    String?
+  shareToken      String?  @unique
+  kind            PageKind @default(WEEKLY)
+  // Versioning: when the user revises a page, we keep history. revisionOfId points to
+  // the Page this row revised (the previous version). Only one version per chain has
+  // isCurrent=true at a time.
+  version         Int      @default(1)
+  revisionOfId    String?
+  isCurrent       Boolean  @default(true)
+  // Generation metadata for observability and audit:
+  // - generationPlan: EntryPlan JSON returned by the planner step
+  // - sourceContext:  { pageIds[], threadIds[], memoryIds[] } that fed the writer
+  generationPlan  Json?
+  sourceContext   Json?
+  manuscriptOrder Int?
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  embedding       PageEmbedding?
 
   @@index([userId, createdAt])
   @@index([userId, chapterId])
+  @@index([userId, kind])
+  @@index([userId, isCurrent, kind])
+  @@index([revisionOfId])
 }
 
 model ClarificationQuestion {
@@ -116,13 +165,22 @@ model Chapter {
   entry        Entry?   @relation(fields: [entryId], references: [id], onDelete: Cascade)
   bookId       String?
   book         Book?    @relation(fields: [bookId], references: [id], onDelete: SetNull)
+  // Sprint 4 — Chapter promoted from a 1:1-with-Entry artifact (legacy) to a
+  // first-class manuscript unit synthesized from 4-6 Pages.
+  partId       String?
+  part         BookPart? @relation(fields: [partId], references: [id], onDelete: SetNull)
   title        String
   subtitle     String?
+  // Sprint 4 — `intro` is the biographer's bridge prose between chapters
+  // (100-250 words). Distinct from `summary` which is internal scaffolding
+  // for retrieval/PDF.
+  intro        String?
   summary      String?
-  content      String
+  content      String   @default("")
   quote        String?
   mood         String[] @default([])
   tags         String[] @default([])
+  themes       String[] @default([])
   people       String[] @default([])
   places       String[] @default([])
   keyEvents    String[] @default([])
@@ -131,7 +189,13 @@ model Chapter {
   cardImageUrl String?
   accentColor  String?
   isSaved      Boolean  @default(false)
-  isPrivate   Boolean  @default(true)
+  isPrivate    Boolean  @default(true)
+  status       ChapterStatus @default(DRAFT)
+  // Sprint 4 — orderIndex within the book (manual or AI-assigned reordering).
+  // periodStart/End are the date range covered by the chapter's pages.
+  orderIndex   Int      @default(0)
+  periodStart  DateTime?
+  periodEnd    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -139,7 +203,29 @@ model Chapter {
   pages        Page[]
 
   @@index([userId, isSaved, createdAt])
+  @@index([userId, status, orderIndex])
+  @@index([userId, partId])
   @@index([bookId])
+}
+
+// Sprint 4 — A book Part (Part I / Part II / Part III). Chapters belong to
+// at most one Part. Parts are introduced once the manuscript is large enough
+// to warrant a top-level division (typically after 13-18 pages).
+model BookPart {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation("UserBookParts", fields: [userId], references: [id], onDelete: Cascade)
+  bookId      String?
+  title       String
+  intro       String?
+  orderIndex  Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  chapters    Chapter[]
+
+  @@index([userId, orderIndex])
+  @@index([bookId, orderIndex])
 }
 
 model Book {
@@ -154,8 +240,19 @@ model Book {
   periodEnd        DateTime?
   coverUrl         String?
   coverPromptUsed  String?
+  // Sprint 5.6 — Pro users see 3 cover variants per milestone. We persist the
+  // candidate URLs so the user can flip back to a previous variant. The
+  // currently-displayed cover is `coverUrl`; `coverVariants` are alternates.
+  coverVariants    String[]  @default([])
   pdfUrl           String?
   pdfGeneratedAt   DateTime?
+  // Sprint 5.7 — count of /export downloads, for analytics. The actual zip is
+  // built on-demand and not persisted on the Book row.
+  exportCount      Int       @default(0)
+  // Sprint 5.2 — epilogue is generated as the final pre-PDF step.
+  epilogue         String?
+  coverVersion     Int       @default(0)
+  titleSetByUser   Boolean   @default(false)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -164,21 +261,142 @@ model Book {
   @@index([userId, createdAt])
 }
 
+// Sprint 3 — Memory upgraded in place to act as MemoryEntity (master spec §4.6).
+//
+// `title` is the canonical name (a person's real name, a place name, a theme
+// label). `content` is the rolling currentSummary — 80–200 words of prose
+// describing what the system knows; merged with each new evidence rather than
+// overwritten.
+// `normalizedName` is the dedupe key — lowercased + trimmed + stem-lite. Pair
+// with type to form a per-user identity: (userId, type, normalizedName).
+// `aliases` collects alternate spellings the user has used ("бабуля", "бабушка").
+// `sourcePageIds` tracks every Page that contributed to this memory; the Mini
+// App page-detail view (Sprint 4) uses this to show "from these pages".
+//
+// The schema also adds MemoryRevision (history of summary changes), so a future
+// reviewer can see how the memory evolved — never destructive rewrites.
 model Memory {
   id              String     @id @default(uuid())
   userId          String
   user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   type            MemoryType
+  category        String     @default("EXTRACTED")
   title           String
   content         String
   confidence      Float      @default(0.7)
+  // Sprint 3.1 additions — entity-style memory.
+  normalizedName  String?
+  aliases         String[]   @default([])
+  sourcePageIds   String[]   @default([])
+  doNotUse        Boolean    @default(false)
   sourceChapterId String?
   sourceChapter   Chapter?   @relation(fields: [sourceChapterId], references: [id], onDelete: SetNull)
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
+  revisions       MemoryRevision[]
+
   @@index([userId, type])
+  @@index([userId, category])
   @@index([sourceChapterId])
+  // Per-user uniqueness within type. Partial: only enforced when
+  // normalizedName is set (legacy rows with NULL stay valid).
+  @@unique([userId, type, normalizedName], name: "Memory_user_type_name_uniq")
+}
+
+// Sprint 3 — append-only history of how a Memory evolved.
+// Every merge/contradiction/confirm event adds a row. Never deleted.
+model MemoryRevision {
+  id          String   @id @default(uuid())
+  memoryId    String
+  memory      Memory   @relation(fields: [memoryId], references: [id], onDelete: Cascade)
+  pageId      String?
+  oldSummary  String?
+  newSummary  String
+  reason      String?
+  changeType  String   @default("add_detail")
+  createdAt   DateTime @default(now())
+
+  @@index([memoryId, createdAt])
+}
+
+// Sprint 3 — NarrativeThread (master spec §4.5).
+// Memory answers "what does the system know about this entity?".
+// NarrativeThread answers "how is this evolving across the year?".
+//
+// Examples: "разговоры с мамой без слов" (RELATIONSHIP), "возвращение к рисованию"
+// (THEME), "решить уйти с работы" (GOAL).
+//
+// summary is a 200–400 word rolling description. tension captures what's
+// unresolved. lastMovement is the most recent specific change.
+model NarrativeThread {
+  id            String        @id @default(uuid())
+  userId        String
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title         String
+  type          ThreadType
+  status        ThreadStatus  @default(ACTIVE)
+  summary       String
+  tension       String?
+  lastMovement  String?
+  people        String[]      @default([])
+  places        String[]      @default([])
+  themes        String[]      @default([])
+  firstPageId   String?
+  lastPageId    String?
+  confidence    Float         @default(0.8)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  events        NarrativeThreadEvent[]
+
+  @@index([userId, status])
+  @@index([userId, type])
+  @@index([userId, updatedAt])
+}
+
+// Sprint 3 — append-only log of thread movements. Each new Page that advances
+// a thread adds one row; the parent NarrativeThread.summary aggregates these.
+model NarrativeThreadEvent {
+  id        String          @id @default(uuid())
+  threadId  String
+  thread    NarrativeThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  pageId    String
+  summary   String
+  createdAt DateTime        @default(now())
+
+  @@index([threadId, createdAt])
+  @@index([pageId])
+}
+
+// Sprint 1 — semantic retrieval over the manuscript corpus.
+//
+// One row per current Page (revisions get their own embeddings only when we
+// decide to embed them). The `embedding` column uses pgvector's `vector` type;
+// Prisma represents that as Unsupported<"vector(1536)"> and queries go through
+// `prisma.$queryRaw` on top of the HNSW index defined in the SQL migration.
+//
+// Dimensions match OPENAI_EMBEDDING_DIMENSIONS (default 1536 for
+// text-embedding-3-small). If you switch to a different embedding model, bump
+// the column to the new dimensionality in a fresh migration — pgvector cannot
+// store mixed-dimension vectors in one column.
+model PageEmbedding {
+  pageId     String                       @id
+  page       Page                         @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  userId     String
+  model      String
+  dimensions Int
+  // pgvector dimension is enforced at the SQL level, not the schema, because
+  // Prisma's Unsupported() does not accept dimension parameters. The migration
+  // creates the column as `vector(1536)`.
+  embedding  Unsupported("vector")
+  // Hash of the body that was embedded. Used by the backfill script to skip
+  // re-embedding unchanged pages and by the queue handler to enforce idempotency.
+  bodyHash   String
+  createdAt  DateTime                     @default(now())
+  updatedAt  DateTime                     @updatedAt
+
+  @@index([userId])
 }
 
 model Payment {
@@ -204,14 +422,19 @@ enum UserState {
   ONBOARDING_FREQUENCY
   ONBOARDING_REMINDER_DAY
   ONBOARDING_REMINDER_TIME
+  ONBOARDING_INTAKE
   READY
   WAITING_FOR_WEEKLY_INPUT
   TRANSCRIBING_AUDIO
+  AWAITING_TRANSCRIPT_CONFIRM
   GENERATING_QUESTIONS
   WAITING_FOR_ANSWERS
   GENERATING_CHAPTER
   REVIEWING_CHAPTER
   CHAPTER_SAVED
+  AWAITING_PAGE_REVISION
+  AWAITING_CHAPTER_RENAME
+  AWAITING_CHAPTER_INTRO_DETAIL
 }
 
 enum EntryStatus {
@@ -232,6 +455,20 @@ enum ReminderFrequency {
   MANUAL
 }
 
+enum PageKind {
+  WEEKLY
+  PROLOGUE
+  RETROSPECTIVE
+  CHAPTER_INTRO
+  EPILOGUE
+}
+
+enum EntryType {
+  WEEKLY
+  RETROSPECTIVE
+  INTAKE_SCENE
+}
+
 enum MemoryType {
   PERSON
   PLACE
@@ -241,6 +478,40 @@ enum MemoryType {
   FEAR
   ACHIEVEMENT
   PREFERENCE
+}
+
+// Sprint 3 — NarrativeThread classification.
+// Loosely overlaps with MemoryType (both can refer to a person), but a thread
+// is about evolution, not facts. PERSON+RELATIONSHIP separate so a thread
+// can be either «what we know about this person» or «the dynamics between
+// the user and this person».
+enum ThreadType {
+  PERSON
+  RELATIONSHIP
+  PLACE
+  THEME
+  GOAL
+  FEAR
+  IDENTITY
+  WORK
+  HEALTH
+  FAMILY
+}
+
+enum ThreadStatus {
+  ACTIVE
+  DORMANT
+  RESOLVED
+}
+
+// Sprint 4 — chapter approval lifecycle.
+// DRAFT          — auto-synthesized by the chapter job, not yet approved by user.
+// USER_APPROVED  — user reviewed and accepted the chapter as-is or after edits.
+// LOCKED_FOR_PDF — chapter is included in a PDF build; further edits create v+1.
+enum ChapterStatus {
+  DRAFT
+  USER_APPROVED
+  LOCKED_FOR_PDF
 }
 
 enum PaymentStatus {

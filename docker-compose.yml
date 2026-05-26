@@ -1,6 +1,9 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # Sprint 1.1 — pgvector extension required for PageEmbedding similarity search.
+    # The pgvector/pgvector image is the upstream-recommended distribution; the
+    # `pg16` tag is wire-compatible with the previous `postgres:16-alpine` data dir.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: lifebook
       POSTGRES_PASSWORD: lifebook
@@ -28,7 +31,40 @@ services:
       timeout: 3s
       retries: 20
 
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    env_file: .env
+    # Override only what must come from compose (DB/Redis hostnames live on the
+    # internal network). Everything else lives in .env so it can be a public URL.
+    environment:
+      DATABASE_URL: postgresql://lifebook:lifebook@postgres:5432/lifebook?schema=public
+      REDIS_URL: redis://redis:6379
+      LOCAL_STORAGE_DIR: /app/storage
+    ports:
+      - "8080:8080"
+    volumes:
+      - lifebook-storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    env_file: .env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - bot
+    restart: unless-stopped
+
 volumes:
   lifebook-postgres:
   lifebook-redis:
-
+  lifebook-storage:

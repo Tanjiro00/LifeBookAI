@@ -1,6 +1,6 @@
 import { PRIVATE_BIOGRAPHER_SYSTEM_PROMPT, buildNameBookPrompt } from "./prompts.js";
 import { parseWithSchema } from "./json.js";
-import { getOpenAiClient, shouldUseMockAi } from "./openaiClient.js";
+import { getOpenAiClient } from "./openaiClient.js";
 import {
   NameBookInputSchema,
   NameBookOutputSchema,
@@ -10,10 +10,6 @@ import {
 
 export async function nameBook(unsafeInput: NameBookInput): Promise<NameBookOutput> {
   const input = NameBookInputSchema.parse(unsafeInput);
-
-  if (shouldUseMockAi()) {
-    return mockNameBook(input);
-  }
 
   const client = getOpenAiClient();
   const model = process.env.OPENAI_TEXT_MODEL || "gpt-4.1";
@@ -37,18 +33,13 @@ export async function nameBook(unsafeInput: NameBookInput): Promise<NameBookOutp
     try {
       return parseWithSchema(lastRaw, NameBookOutputSchema);
     } catch {
-      if (attempt === 2) return mockNameBook(input);
+      if (attempt === 2) break;
     }
   }
-  return mockNameBook(input);
-}
-
-function mockNameBook(input: NameBookInput): NameBookOutput {
-  const language = (input.language || "ru").toLowerCase();
-  if (language.startsWith("en")) {
-    return { title: "What I Kept", subtitle: "fifty-two weeks, one voice" };
-  }
-  // Pick a fragment from the first entry's title to feel less generic.
-  const fragment = input.entries[0]?.title.split(/[\s,—]/).find((w) => w.length >= 4) || "Год";
-  return { title: `Книга про ${fragment.toLowerCase()}`, subtitle: "пятьдесят две недели, один голос" };
+  // Both attempts failed to parse. Throw — bookComposer's catch falls back to
+  // the user's current Book.title (already set in onboarding) and the
+  // name-book job retries on the next milestone. We never make up a title.
+  throw new Error(
+    `nameBook: failed to produce valid JSON after 2 attempts. Last response length: ${lastRaw.length}`
+  );
 }

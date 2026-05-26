@@ -1,4 +1,28 @@
+import { config } from "../config.js";
+
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1"]);
+
+// Sprint 0.8 — Mini App URL helpers.
+//
+// All «open in book» buttons throughout the bot route through these helpers so
+// the Mini App URL strategy lives in one place. MINIAPP_URL falls back to
+// PUBLIC_WEB_URL during local dev when the Mini App and the web preview are
+// served from the same origin.
+function miniAppBase(): string {
+  return (config.MINIAPP_URL || config.PUBLIC_WEB_URL).replace(/\/$/, "");
+}
+
+export function pageMiniAppUrl(pageId: string): string {
+  return `${miniAppBase()}/page/${pageId}`;
+}
+
+export function chapterMiniAppUrl(chapterId: string): string {
+  return `${miniAppBase()}/chapter/${chapterId}`;
+}
+
+export function bookMiniAppUrl(shareToken: string): string {
+  return `${miniAppBase()}/book/${shareToken}`;
+}
 
 export function isTelegramInlineUrl(value: string): boolean {
   try {

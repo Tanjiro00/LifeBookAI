@@ -1,17 +1,12 @@
 import { PRIVATE_BIOGRAPHER_SYSTEM_PROMPT, buildEntryPrompt } from "./prompts.js";
 import { parseWithSchema } from "./json.js";
-import { getOpenAiClient, shouldUseMockAi } from "./openaiClient.js";
+import { getOpenAiClient } from "./openaiClient.js";
 import { detectContentLanguage } from "./language.js";
-import { mockEntry } from "./mock.js";
 import { EntryOutputSchema, GenerateEntryInputSchema, type EntryOutput, type GenerateEntryInput } from "./schemas.js";
 
 export async function generateEntry(unsafeInput: GenerateEntryInput): Promise<EntryOutput> {
   const input = GenerateEntryInputSchema.parse(unsafeInput);
   const language = detectContentLanguage(input.rawEntryOrTranscript, input.language);
-
-  if (shouldUseMockAi()) {
-    return mockEntry({ ...input, language });
-  }
 
   const client = getOpenAiClient();
   const model = process.env.OPENAI_TEXT_MODEL || "gpt-4.1";

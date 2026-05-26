@@ -1,4 +1,5 @@
 import type { Context, NextFunction } from "grammy";
+import { t } from "./i18n.js";
 
 type Bucket = {
   count: number;
@@ -25,7 +26,13 @@ export function rateLimit({ limit, windowMs }: { limit: number; windowMs: number
     }
 
     if (bucket.count >= limit) {
-      await ctx.reply("Слишком много сообщений подряд. Дай мне несколько секунд, чтобы не потерять контекст.");
+      await ctx.reply(
+        t(
+          ctx,
+          "Слишком много сообщений подряд. Дай мне несколько секунд, чтобы не потерять контекст.",
+          "Too many messages at once. Give me a few seconds so I don't lose context."
+        )
+      );
       return;
     }
 
@@ -33,4 +40,3 @@ export function rateLimit({ limit, windowMs }: { limit: number; windowMs: number
     await next();
   };
 }
-

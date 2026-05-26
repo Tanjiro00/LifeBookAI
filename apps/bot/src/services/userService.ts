@@ -50,11 +50,13 @@ export async function ensureDefaultBook(userId: string): Promise<void> {
     return;
   }
 
+  // Neutral placeholder — the user is invited to pick their own title via /title,
+  // and ensureBookArtifacts will offer an AI suggestion at 3+ entries (unless the
+  // user has already locked their title in).
   await prisma.book.create({
     data: {
       userId,
-      title: "Год, когда я стал собой",
-      subtitle: "Личная книга жизни"
+      title: `Моя книга · ${new Date().getFullYear()}`
     }
   });
 }
@@ -67,6 +69,9 @@ export async function setUserState(user: User, nextState: UserStateValue): Promi
   });
 }
 
+// Flips `onboardingDone` true and parks the user in READY. Called once at the end
+// of the intake/Prologue flow — NOT after the reminder preset, since we still have
+// 7 questions ahead. Reminders are only sent to users with onboardingDone=true.
 export async function markOnboardingReady(userId: string): Promise<User> {
   return prisma.user.update({
     where: { id: userId },

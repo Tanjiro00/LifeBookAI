@@ -1,5 +1,10 @@
 import OpenAI from "openai";
 
+// Mock paths were removed from the service. Every AI call now hits OpenAI;
+// if OPENAI_API_KEY is missing, getOpenAiClient() throws on first use and
+// the bot surfaces a real error. This is intentional — fake biographical
+// content must never appear in a user's manuscript.
+
 let client: OpenAI | undefined;
 
 export function getOpenAiClient(): OpenAI {
@@ -12,9 +17,5 @@ export function getOpenAiClient(): OpenAI {
   });
 
   return client;
-}
-
-export function shouldUseMockAi(): boolean {
-  return process.env.AI_PROVIDER === "mock" || !process.env.OPENAI_API_KEY;
 }
 

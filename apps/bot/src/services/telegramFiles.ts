@@ -13,7 +13,12 @@ export async function downloadTelegramFile(ctx: Context, fileId: string, prefix 
   }
 
   await mkdir(paths.audioDir, { recursive: true });
-  const extension = file.file_path.split(".").pop() || "ogg";
+  // Telegram voice files come back with the .oga extension. The newer OpenAI
+  // transcribe models (gpt-4o-mini-transcribe) reject "oga" by name even though
+  // the bytes are identical OGG/Opus. Normalize so the OpenAI SDK uploads with a
+  // filename ending in .ogg.
+  const rawExt = (file.file_path.split(".").pop() || "ogg").toLowerCase();
+  const extension = rawExt === "oga" ? "ogg" : rawExt;
   const filename = `${prefix}-${fileId.replace(/[^a-zA-Z0-9_-]/g, "")}.${extension}`;
   const filePath = join(paths.audioDir, filename);
   const url = `https://api.telegram.org/file/bot${config.TELEGRAM_BOT_TOKEN}/${file.file_path}`;

@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
-import type { BookDto, BookEntryDto } from "../api";
+import type { BookChapterDto, BookDto, BookEntryDto } from "../api";
 import { accentFor } from "../palette";
 
 type Props = { book: BookDto };
@@ -35,7 +35,9 @@ function densityForIndex(i: number, total: number) {
 }
 
 export function LivingBook({ book }: Props) {
+  const prologue = book.prologue ?? [];
   const entries = book.entries;
+  const hasPrologue = prologue.length > 0;
   const lastRef = useRef<HTMLElement | null>(null);
   const [opened, setOpened] = useState(false);
 
@@ -45,13 +47,17 @@ export function LivingBook({ book }: Props) {
   }, []);
 
   const subtitle = useMemo(() => {
-    if (entries.length === 0) return book.subtitle || "Книга только начинается";
-    const first = new Date(entries[0]!.createdAt);
-    const last = new Date(entries[entries.length - 1]!.createdAt);
+    if (!hasPrologue && entries.length === 0) return book.subtitle || "Книга только начинается";
+    const all = [...prologue, ...entries];
+    const first = new Date(all[0]!.createdAt);
+    const last = new Date(all[all.length - 1]!.createdAt);
     return `${formatDateLong(first)} — ${formatDateLong(last)}`;
-  }, [book.subtitle, entries]);
+  }, [book.subtitle, prologue, entries, hasPrologue]);
 
-  const counter = `${entries.length} из ${TOTAL_SLOTS} записей`;
+  const counter =
+    hasPrologue && entries.length === 0
+      ? `Пролог · ${prologue.length} ${pluralRuPages(prologue.length)}`
+      : `${entries.length} из ${TOTAL_SLOTS} записей`;
   const shipDate = `7 декабря ${new Date(book.createdAt).getFullYear()}`;
 
   const scrollToLast = () => lastRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -72,17 +78,69 @@ export function LivingBook({ book }: Props) {
           opened ? "opacity-100" : "opacity-0"
         }`}
       >
-        {entries.map((e, i) => (
-          <EntrySection
-            key={e.id}
-            entry={e}
-            index={i}
-            total={entries.length}
-            previous={i > 0 ? entries[i - 1]! : null}
-            ref={i === entries.length - 1 ? lastRef : null}
-          />
-        ))}
-        <BookFoot count={entries.length} />
+        {hasPrologue && (
+          <>
+            <PrologueHeader count={prologue.length} />
+            {prologue.map((p, i) => (
+              <EntrySection
+                key={p.id}
+                entry={p}
+                index={i}
+                total={prologue.length}
+                previous={i > 0 ? prologue[i - 1]! : null}
+                kind="prologue"
+              />
+            ))}
+            {entries.length > 0 && <SectionDivider label="ГОД ПОШЁЛ" />}
+          </>
+        )}
+        {/*
+          Sprint 4.12 — chapter-aware rendering.
+          When the book has chapters, group entries by chapterId and emit a
+          Chapter divider with the chapter intro before each group. Unchaptered
+          entries (chapterId=null) fall through to a final "current week" group
+          rendered without an intro. When no chapters exist (legacy path), this
+          collapses to one big group rendered exactly like the old flat list,
+          which preserves backward compatibility for users pre-Sprint-4.
+        */}
+        {(() => {
+          const chapters = (book.chapters ?? []).slice().sort((a, b) => a.orderIndex - b.orderIndex);
+          const groups: Array<{ chapter: BookChapterDto | null; entries: BookEntryDto[] }> = [];
+          if (chapters.length === 0) {
+            groups.push({ chapter: null, entries });
+          } else {
+            for (const c of chapters) {
+              groups.push({ chapter: c, entries: entries.filter((e) => e.chapterId === c.id) });
+            }
+            const orphans = entries.filter((e) => !e.chapterId);
+            if (orphans.length) groups.push({ chapter: null, entries: orphans });
+          }
+          let renderedTotal = 0;
+          return groups.map((g, gi) => (
+            <div key={g.chapter?.id ?? `group-${gi}`}>
+              {g.chapter ? <ChapterDivider chapter={g.chapter} /> : gi > 0 ? <SectionDivider label="ВНЕ ГЛАВЫ" /> : null}
+              {g.entries.map((e, i) => {
+                const idx = renderedTotal + i;
+                const isLast = gi === groups.length - 1 && i === g.entries.length - 1;
+                return (
+                  <EntrySection
+                    key={e.id}
+                    entry={e}
+                    index={idx}
+                    total={entries.length}
+                    previous={idx > 0 ? entries[idx - 1]! : null}
+                    ref={isLast ? lastRef : null}
+                  />
+                );
+              })}
+              {(() => {
+                renderedTotal += g.entries.length;
+                return null;
+              })()}
+            </div>
+          ));
+        })()}
+        <BookFoot count={entries.length} hasPrologue={hasPrologue} />
       </div>
 
       {/* Sticky CTA: PDF if available, else jump-to-last */}
@@ -153,14 +211,18 @@ type SectionProps = {
   index: number;
   total: number;
   previous: BookEntryDto | null;
+  kind?: "weekly" | "prologue";
 };
 
-const EntrySection = forwardRef<HTMLElement, SectionProps>(({ entry, index, total, previous }, ref) => {
+const EntrySection = forwardRef<HTMLElement, SectionProps>(({ entry, index, total, previous, kind = "weekly" }, ref) => {
   const accent = accentFor(entry.accentColor);
   const density = densityForIndex(index, total);
   const date = new Date(entry.createdAt);
   const prevDate = previous ? new Date(previous.createdAt) : null;
-  const showMonthDivider = !prevDate || !isSameMonth(prevDate, date);
+  const isPrologue = kind === "prologue";
+  // Prologue pages are sequential within the prologue, no month dividers — they all
+  // appear under one PROLOGUE header. Weekly entries get month dividers as before.
+  const showMonthDivider = !isPrologue && (!prevDate || !isSameMonth(prevDate, date));
 
   const paragraphs = entry.sceneContent.split(/\n{2,}/).filter(Boolean);
 
@@ -183,7 +245,9 @@ const EntrySection = forwardRef<HTMLElement, SectionProps>(({ entry, index, tota
           style={{ background: accent.stripe }}
         />
         <div className="font-sans text-[10px] uppercase tracking-[0.22em] text-ink/45">
-          {date.getDate()} {MONTHS_RU[date.getMonth()]}
+          {isPrologue
+            ? `Стр. ${index + 1} из ${total}`
+            : `${date.getDate()} ${MONTHS_RU[date.getMonth()]}`}
         </div>
         <h2 className={`mt-3 font-serif ${density.titleSize} font-semibold leading-tight text-ink`}>{entry.sceneTitle}</h2>
         {entry.quote && (
@@ -209,8 +273,87 @@ const EntrySection = forwardRef<HTMLElement, SectionProps>(({ entry, index, tota
 
 EntrySection.displayName = "EntrySection";
 
-function BookFoot({ count }: { count: number }) {
+// Sprint 4.12 — Chapter divider rendered between page groups. Shows the
+// chapter number (orderIndex+1), title, optional subtitle, and the intro
+// paragraph the synthesiser produced. Themes show as a small monospace tag
+// row underneath.
+function ChapterDivider({ chapter }: { chapter: BookChapterDto }) {
+  const themesLine = (chapter.themes ?? [])
+    .filter(Boolean)
+    .slice(0, 6)
+    .map((t) => t.toLowerCase())
+    .join(" · ");
+  return (
+    <section className="my-20">
+      <div className="mb-6 flex items-center gap-3 font-sans text-[11px] uppercase tracking-[0.32em] text-bronze">
+        <span className="h-px flex-1 bg-bronze/25" />
+        <span>Глава {chapter.orderIndex + 1}</span>
+        <span className="h-px flex-1 bg-bronze/25" />
+      </div>
+      <h2 className="text-center font-serif text-3xl font-semibold leading-tight text-ink sm:text-5xl">
+        {chapter.title}
+      </h2>
+      {chapter.subtitle && (
+        <p className="mt-3 text-center font-serif text-base italic text-ink/65 sm:text-lg">
+          {chapter.subtitle}
+        </p>
+      )}
+      {chapter.intro && (
+        <article className="mx-auto mt-8 max-w-[600px] font-serif text-[18px] leading-[1.8] text-ink/85 sm:text-[19px]">
+          {chapter.intro.split(/\n{2,}/).filter(Boolean).map((p, i) => (
+            <p key={i} className="mb-4">
+              {p}
+            </p>
+          ))}
+        </article>
+      )}
+      {themesLine && (
+        <div className="mt-6 text-center font-sans text-[10px] uppercase tracking-[0.24em] text-ink/45">
+          {themesLine}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PrologueHeader({ count }: { count: number }) {
+  return (
+    <div className="my-12 flex items-center gap-3 font-sans text-[11px] uppercase tracking-[0.32em] text-bronze">
+      <span className="h-px flex-1 bg-bronze/25" />
+      <span>ПРОЛОГ · {count} {pluralRuPages(count)}</span>
+      <span className="h-px flex-1 bg-bronze/25" />
+    </div>
+  );
+}
+
+function SectionDivider({ label }: { label: string }) {
+  return (
+    <div className="my-16 flex items-center gap-3 font-sans text-[11px] uppercase tracking-[0.32em] text-bronze">
+      <span className="h-px flex-1 bg-bronze/25" />
+      <span>{label}</span>
+      <span className="h-px flex-1 bg-bronze/25" />
+    </div>
+  );
+}
+
+function pluralRuPages(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 14) return "страниц";
+  if (mod10 === 1) return "страница";
+  if (mod10 >= 2 && mod10 <= 4) return "страницы";
+  return "страниц";
+}
+
+function BookFoot({ count, hasPrologue }: { count: number; hasPrologue: boolean }) {
   if (count === 0) {
+    if (hasPrologue) {
+      return (
+        <div className="my-24 text-center font-serif text-lg italic text-ink/55">
+          год пошёл — первая страница за неделю
+        </div>
+      );
+    }
     return (
       <div className="my-24 text-center font-serif text-lg italic text-ink/55">
         книга начинается с первой записи

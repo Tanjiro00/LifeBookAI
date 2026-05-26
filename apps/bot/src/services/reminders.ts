@@ -82,7 +82,7 @@ export async function sendDueReminders(bot: Bot, now = new Date()): Promise<numb
         lastTitle: lastEntry?.sceneTitle ?? null,
         weekIndex: slot.weekIndex
       });
-      await bot.api.sendMessage(String(user.telegramId), text, { reply_markup: weeklyPromptKeyboard() });
+      await bot.api.sendMessage(String(user.telegramId), text, { reply_markup: weeklyPromptKeyboard({ languageCode: user.languageCode }) });
       await prisma.user.update({
         where: { id: user.id },
         data: { state: UserState.WAITING_FOR_WEEKLY_INPUT, lastReminderAt: now }
@@ -121,7 +121,7 @@ export async function sendDueCatchups(bot: Bot, now = new Date()): Promise<numbe
     try {
       const language = languageFor(user);
       const text = catchupText(language, lastEntry?.sceneTitle);
-      await bot.api.sendMessage(String(user.telegramId), text, { reply_markup: weeklyPromptKeyboard() });
+      await bot.api.sendMessage(String(user.telegramId), text, { reply_markup: weeklyPromptKeyboard({ languageCode: user.languageCode }) });
       await prisma.user.update({
         where: { id: user.id },
         data: { lastCatchupAt: now }

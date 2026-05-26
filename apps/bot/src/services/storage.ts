@@ -51,11 +51,21 @@ export async function getSampleEntryCardPath(): Promise<string> {
   return filePath;
 }
 
-export async function renderAndStoreEntryCard(page: Page, totalSlots = 52) {
+export async function renderAndStoreEntryCard(
+  page: Page,
+  totalSlotsOrOptions: number | { totalSlots?: number; entryNumber?: number } = 52
+) {
   await ensureStorageDirs();
+  const opts =
+    typeof totalSlotsOrOptions === "number"
+      ? { totalSlots: totalSlotsOrOptions, entryNumber: undefined }
+      : { totalSlots: totalSlotsOrOptions.totalSlots ?? 52, entryNumber: totalSlotsOrOptions.entryNumber };
+
+  const entryNumber = opts.entryNumber ?? (await entryNumberFor(page));
+
   const buffer = renderEntryCardPng({
-    entryNumber: await entryNumberFor(page),
-    totalSlots,
+    entryNumber,
+    totalSlots: opts.totalSlots,
     title: page.sceneTitle,
     body: page.sceneContent,
     quote: page.quote,
@@ -68,18 +78,20 @@ export async function renderAndStoreEntryCard(page: Page, totalSlots = 52) {
   await writeFile(filePath, buffer);
   return {
     filePath,
-    publicUrl: `${config.MEDIA_BASE_URL.replace(/\/$/, "")}/media/cards/${filename}`,
+    // Relative path so the web app (served on the same origin via tunnel) can fetch
+    // through Vite's /media proxy without caring about the bot's hostname.
+    publicUrl: `/media/cards/${filename}`,
     inputFile: new InputFile(buffer, `lifebook-entry-${page.id}.png`)
   };
 }
 
-// Helper that takes a page and resolves its entry-number — used by the card renderer
-// when it isn't given one. We compute by counting earlier pages by createdAt.
+// Counts only WEEKLY pages up to and including this one. The Prologue is the
+// foundation, not "Запись 1 из 52" — the user sees weekly entries numbered 1..52,
+// while Prologue chapters get their own caption from the caller.
 async function entryNumberFor(page: Page): Promise<number> {
-  // Avoid extra queries when caller supplied number-aware path; fallback to page count via DB.
   const { prisma } = await import("../lib/db.js");
   return prisma.page.count({
-    where: { userId: page.userId, createdAt: { lte: page.createdAt } }
+    where: { userId: page.userId, kind: "WEEKLY", createdAt: { lte: page.createdAt } }
   });
 }
 
@@ -90,7 +102,7 @@ export async function storeBookCoverPng(bookId: string, base64: string): Promise
   await writeFile(filePath, Buffer.from(base64, "base64"));
   return {
     filePath,
-    publicUrl: `${config.MEDIA_BASE_URL.replace(/\/$/, "")}/media/covers/${filename}`
+    publicUrl: `/media/covers/${filename}`
   };
 }
 
@@ -101,7 +113,7 @@ export async function storeBookPdf(bookId: string, buffer: Buffer): Promise<{ pu
   await writeFile(filePath, buffer);
   return {
     filePath,
-    publicUrl: `${config.MEDIA_BASE_URL.replace(/\/$/, "")}/media/books/${filename}`
+    publicUrl: `/media/books/${filename}`
   };
 }
 

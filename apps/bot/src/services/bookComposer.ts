@@ -5,30 +5,49 @@ import { prisma } from "../lib/db.js";
 import { storeBookCoverPng, storeBookPdf } from "./storage.js";
 import { logger } from "../lib/logger.js";
 
-const COVER_TRIGGER_AT_ENTRIES = 3;
+// First cover at entry 1 (instant visual win), refined at 3/10/25/52 as the corpus
+// gets richer and themes consolidate.
+export const COVER_MILESTONES = [1, 3, 10, 25, 52] as const;
+const NAME_BOOK_MIN_ENTRIES = 3;
 
-// Run after every saved entry. Once the user has 3+ entries, ensure the book has an
-// AI title and cover. Cheap to call repeatedly: each step early-returns if its output
-// already exists.
-export async function ensureBookArtifacts(userId: string): Promise<void> {
+function nextCoverMilestone(entryCount: number, currentVersion: number): number | null {
+  for (const milestone of COVER_MILESTONES) {
+    if (entryCount >= milestone && currentVersion < milestone) return milestone;
+  }
+  return null;
+}
+
+export type ArtifactResult = {
+  titleGenerated: boolean;
+  coverGenerated: boolean;
+};
+
+// Run after every saved entry. Generates AI title + AI cover at the appropriate
+// milestones. Skips title generation entirely if the user has manually set one.
+// Returns metadata so the caller can notify the user about new artifacts.
+export async function ensureBookArtifacts(userId: string): Promise<ArtifactResult> {
+  const result: ArtifactResult = { titleGenerated: false, coverGenerated: false };
+
   const [book, entries] = await Promise.all([
     prisma.book.findFirst({
       where: { userId },
       orderBy: { createdAt: "asc" }
     }),
+    // Cover/title milestones are based on WEEKLY pages only — the Prologue is the
+    // book's foundation, not a weekly entry, and shouldn't trip the cover threshold.
     prisma.page.findMany({
-      where: { userId },
+      where: { userId, kind: "WEEKLY" },
       orderBy: { createdAt: "asc" },
       select: { sceneTitle: true, mood: true, tags: true }
     })
   ]);
-  if (!book) return;
-  if (entries.length < COVER_TRIGGER_AT_ENTRIES) return;
+  if (!book) return result;
+  if (entries.length === 0) return result;
 
-  const language = "ru"; // could be derived from user.languageCode
+  const language = "ru";
 
-  // Generate AI title once.
-  if (!book.aiTitle) {
+  // 1) AI-suggested title at 3+ entries, unless the user has locked it in.
+  if (!book.titleSetByUser && !book.aiTitle && entries.length >= NAME_BOOK_MIN_ENTRIES) {
     try {
       const named = await nameBook({
         entries: entries.map((e) => ({ title: e.sceneTitle, tags: e.tags, mood: e.mood })),
@@ -38,19 +57,22 @@ export async function ensureBookArtifacts(userId: string): Promise<void> {
         where: { id: book.id },
         data: { aiTitle: named.title, subtitle: book.subtitle ?? named.subtitle ?? null }
       });
+      result.titleGenerated = true;
     } catch (err) {
       logger.warn({ err, bookId: book.id }, "nameBook failed");
     }
   }
 
-  // Generate AI cover once. We re-fetch the book to pick up the freshly-set title.
+  // 2) AI cover at the next milestone, if there is one.
   const fresh = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
-  if (!fresh.coverUrl) {
+  const milestone = nextCoverMilestone(entries.length, fresh.coverVersion);
+  if (milestone !== null) {
     try {
       const themes = Array.from(new Set(entries.flatMap((e) => e.tags))).slice(0, 6);
       const mood = Array.from(new Set(entries.flatMap((e) => e.mood))).slice(0, 4);
+      const titleForCover = fresh.titleSetByUser ? fresh.title : (fresh.aiTitle || fresh.title);
       const cover = await generateCover({
-        bookTitle: fresh.aiTitle || fresh.title,
+        bookTitle: titleForCover,
         themes,
         mood
       });
@@ -58,13 +80,16 @@ export async function ensureBookArtifacts(userId: string): Promise<void> {
         const stored = await storeBookCoverPng(fresh.id, cover.imageBase64);
         await prisma.book.update({
           where: { id: fresh.id },
-          data: { coverUrl: stored.publicUrl, coverPromptUsed: cover.promptUsed }
+          data: { coverUrl: stored.publicUrl, coverPromptUsed: cover.promptUsed, coverVersion: milestone }
         });
+        result.coverGenerated = true;
       }
     } catch (err) {
       logger.warn({ err, bookId: fresh.id }, "generateCover failed");
     }
   }
+
+  return result;
 }
 
 // Pro-only: build a PDF book on-demand and return the local file path.
@@ -80,8 +105,6 @@ export async function buildBookPdfForUser(userId: string): Promise<{ filePath: s
   let coverPng: Buffer | null = null;
   if (book.coverUrl) {
     try {
-      // coverUrl might be a public PUBLIC_WEB_URL — we know the local path follows
-      // /media/covers/<bookId>.png; load directly from disk.
       const path = await import("node:path");
       const { paths } = await import("../config.js");
       coverPng = await readFile(path.join(paths.storageDir, "covers", `${book.id}.png`));
@@ -90,8 +113,9 @@ export async function buildBookPdfForUser(userId: string): Promise<{ filePath: s
     }
   }
 
+  const titleForPdf = book.titleSetByUser ? book.title : (book.aiTitle || book.title);
   const buffer = await renderBookPdf({
-    bookTitle: book.aiTitle || book.title,
+    bookTitle: titleForPdf,
     subtitle: book.subtitle,
     authorName: user.firstName ?? undefined,
     year: new Date().getFullYear(),

@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LifeBook</title>
+    <!--
+      Sprint 4.10 — Telegram Mini App SDK. window.Telegram.WebApp becomes
+      available immediately and exposes initData, theme, BackButton, etc.
+      Loading is harmless when the page is opened outside Telegram — the SDK
+      simply has empty initData and the app falls back to the public
+      shareToken-based read.
+    -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
     <div id="root"></div>

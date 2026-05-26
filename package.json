@@ -32,6 +32,8 @@
     "vitest": "^3.1.2"
   },
   "dependencies": {
-    "@prisma/client": "^6.19.3"
+    "@prisma/client": "^6.19.3",
+    "@sentry/node": "^10.52.0",
+    "prom-client": "^15.1.3"
   }
 }

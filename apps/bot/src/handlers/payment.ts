@@ -2,8 +2,9 @@ import type { Context } from "grammy";
 import { prisma } from "../lib/db.js";
 import { ensureTelegramUser } from "../services/userService.js";
 import { findProductByCode } from "../services/subscriptions.js";
-import { track } from "../services/analytics.js";
+import { identifyUser, track } from "../services/analytics.js";
 import { logger } from "../lib/logger.js";
+import { t } from "../lib/i18n.js";
 
 export async function handlePreCheckoutQuery(ctx: Context): Promise<void> {
   const query = ctx.preCheckoutQuery;
@@ -11,11 +12,11 @@ export async function handlePreCheckoutQuery(ctx: Context): Promise<void> {
 
   const product = findProductByCode(query.invoice_payload.split(":")[0] || "");
   if (!product) {
-    await ctx.answerPreCheckoutQuery(false, "Тариф устарел. Открой меню заново.");
+    await ctx.answerPreCheckoutQuery(false, t(ctx, "Тариф устарел. Открой меню заново.", "This plan is no longer available. Reopen the menu."));
     return;
   }
   if (query.total_amount !== product.amountStars) {
-    await ctx.answerPreCheckoutQuery(false, "Сумма не совпадает.");
+    await ctx.answerPreCheckoutQuery(false, t(ctx, "Сумма не совпадает.", "Amount mismatch."));
     logger.warn({ total: query.total_amount, expected: product.amountStars }, "Mismatched payment amount");
     return;
   }
@@ -60,12 +61,13 @@ export async function handleSuccessfulPayment(ctx: Context): Promise<void> {
     })
   ]);
 
+  identifyUser(user.id, { isPaid: true, proUntil });
   track("payment_completed", { userId: user.id, productCode, days });
 
   const friendly =
     product?.code === "lifebook_pro_year"
-      ? "Pro на год включён. Книга может расти без потолка."
-      : "Pro включён на месяц. Книга может расти без потолка — продлим, когда подойдёт время.";
+      ? t(ctx, "Pro на год включён. Книга может расти без потолка.", "Pro is on for the year. The book grows without limits.")
+      : t(ctx, "Pro включён на месяц. Книга может расти без потолка — продлим, когда подойдёт время.", "Pro is on for a month. The book grows without limits — we'll renew when the time comes.");
 
   await ctx.reply(friendly);
 }

@@ -8,6 +8,9 @@ import { track } from "../services/analytics.js";
 import { isTelegramInlineUrl } from "../services/urls.js";
 import { paths } from "../config.js";
 import { prisma } from "../lib/db.js";
+import { t, isEnglish } from "../lib/i18n.js";
+import { displayTitle } from "../services/bookTitleService.js";
+import { ensureBookArtifacts } from "../services/bookComposer.js";
 
 const TOTAL_SLOTS = 52;
 
@@ -20,37 +23,58 @@ export async function sendBook(ctx: Context): Promise<void> {
     prisma.book.findFirst({
       where: { userId: user.id },
       orderBy: { createdAt: "asc" },
-      select: { id: true, title: true, aiTitle: true, coverUrl: true, shareToken: true }
+      select: { id: true, title: true, aiTitle: true, coverUrl: true, shareToken: true, titleSetByUser: true }
     }),
     prisma.page.count({ where: { userId: user.id } })
   ]);
 
   if (count === 0) {
     await ctx.reply(
-      "Книга пока пустая. Расскажи момент — текстом или голосом, я открою первую страницу.",
-      { reply_markup: new InlineKeyboard().text("Новая запись", "menu:new") }
+      t(
+        ctx,
+        "Книга пока пустая. Расскажи момент — текстом или голосом, я открою первую страницу.",
+        "The book is empty. Tell me a moment — text or voice — and I'll open page one."
+      ),
+      { reply_markup: new InlineKeyboard().text(t(ctx, "Новая запись", "New entry"), "menu:new") }
     );
     return;
   }
 
-  const title = book?.aiTitle || book?.title || "Книга твоего года";
-  const counter = `${count} из ${TOTAL_SLOTS} записей · книга готова к ${shipDate()}`;
+  // If the user has entries but no cover yet, kick off generation in the background
+  // so it appears next time they open /book. Idempotent: ensureBookArtifacts no-ops
+  // when nothing's due.
+  if (book && !book.coverUrl && count >= 1) {
+    void ensureBookArtifacts(user.id).catch(() => {});
+  }
+
+  const title = book ? displayTitle(book) : (isEnglish(ctx) ? "Your year's book" : "Книга твоего года");
+  const counter = t(
+    ctx,
+    `${count} из ${TOTAL_SLOTS} записей · книга готова к ${shipDate(false)}`,
+    `${count} of ${TOTAL_SLOTS} entries · book ready by ${shipDate(true)}`
+  );
 
   const kb = new InlineKeyboard();
   if (book?.shareToken) {
     const url = bookPreviewUrl(book.shareToken);
-    if (isTelegramInlineUrl(url)) kb.url("Открыть книгу", url);
-    else kb.text("Открыть книгу", `preview:book:${book.id}`);
+    // Open inside Telegram as a Mini App when the URL is HTTPS-public; the
+    // public /book/:shareToken route works both authenticated (better UX
+    // inside Telegram) and unauthenticated (anyone with the link can read).
+    if (url.startsWith("https://") && isTelegramInlineUrl(url)) {
+      kb.webApp(t(ctx, "Открыть книгу", "Open book"), url);
+    } else if (isTelegramInlineUrl(url)) {
+      kb.url(t(ctx, "Открыть книгу", "Open book"), url);
+    } else {
+      kb.text(t(ctx, "Открыть книгу", "Open book"), `preview:book:${book.id}`);
+    }
   }
-  kb.text("Новая запись", "menu:new");
+  kb.text(t(ctx, "Новая запись", "New entry"), "menu:new");
   if (isProActive(user)) {
-    kb.row().text("Скачать PDF", "book:pdf");
+    kb.row().text(t(ctx, "Скачать PDF", "Download PDF"), "book:pdf");
   } else {
-    kb.row().text("Pro · 2900 ⭐ за год", "pay:year");
+    kb.row().text(t(ctx, "Pro · 2900 ⭐ за год", "Pro · 2900 ⭐ / year"), "pay:year");
   }
 
-  // Use the AI cover if it exists. Read from disk via InputFile — cover URL is for the
-  // browser, but Telegram fetches photos from URLs and can't reach localhost in dev.
   if (book?.coverUrl) {
     try {
       const coverPath = join(paths.storageDir, "covers", `${book.id}.png`);
@@ -67,8 +91,7 @@ export async function sendBook(ctx: Context): Promise<void> {
   await ctx.reply([title, counter].join("\n"), { reply_markup: kb });
 }
 
-function shipDate(): string {
+function shipDate(en: boolean): string {
   const year = new Date().getFullYear();
-  // Show only year if we are past December — otherwise pin to Dec 7 of current year.
-  return `7 декабря ${year}`;
+  return en ? `December 7, ${year}` : `7 декабря ${year}`;
 }

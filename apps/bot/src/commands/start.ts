@@ -3,41 +3,70 @@ import { InputFile } from "grammy";
 import { UserState } from "@prisma/client";
 import { ensureTelegramUser } from "../services/userService.js";
 import { getSampleEntryCardPath } from "../services/storage.js";
-import { track } from "../services/analytics.js";
+import { mainMenuKeyboard } from "../keyboards/mainMenu.js";
+import { reminderPresetKeyboard } from "../keyboards/onboarding.js";
+import { identifyUser, track } from "../services/analytics.js";
 import { prisma } from "../lib/db.js";
+import { t } from "../lib/i18n.js";
 
-// /start — for first-time users: a real example of what the bot produces, plus
-// the contract in 3 sentences. For returning users: a tiny status nudge.
+// /start — for first-time users:
+//   1. Photo of a sample card + 3-sentence pitch.
+//   2. Reminder-frequency picker UPFRONT (collected once; never shown after entries).
+//   3. After preset → onboarding intake (7 questions) → AI Prologue → ready for weekly entries.
+// For returning users: condensed status + persistent menu.
 export async function sendStart(ctx: Context): Promise<void> {
   const user = await ensureTelegramUser(ctx);
+  identifyUser(user.id, {
+    languageCode: user.languageCode,
+    onboardingDone: user.onboardingDone,
+    isPaid: user.isPaid,
+    createdAt: user.createdAt,
+    state: user.state
+  });
   track("bot_started", { userId: user.id });
 
   if (!user.onboardingDone) {
     await prisma.user.update({
       where: { id: user.id },
-      data: { state: UserState.WAITING_FOR_WEEKLY_INPUT }
+      data: { state: UserState.ONBOARDING_REMINDER_TIME }
     });
 
     const samplePath = await getSampleEntryCardPath();
-    const caption = [
-      "Привет.",
-      "",
-      "Я складываю твой год в книгу. Не дневник, не журнал — настоящую прозу про твою жизнь.",
-      "",
-      "Раз в неделю ты рассказываешь один момент — голосом или текстом, как удобно. Я превращаю его в страницу вроде той, что выше. К декабрю — 52 записи, AI-обложка и красивая книга твоего года в PDF.",
-      "",
-      "Расскажи первый момент: что было на этой неделе?"
-    ].join("\n");
+    const caption = t(
+      ctx,
+      [
+        "Привет.",
+        "",
+        "Я — твой биограф. Не дневник и не журнал, а один человек, который пишет твою книгу.",
+        "",
+        "Это книга про твою жизнь — с прологом про тебя до этого года, и страницами по моменту в неделю до декабря.",
+        "",
+        "Прежде чем начать — выбери, как часто я буду напоминать."
+      ].join("\n"),
+      [
+        "Hi.",
+        "",
+        "I'm your biographer. Not a diary, not a journal — one person writing your book.",
+        "",
+        "It's a book about your life: a prologue about who you were before this year, then one page per week until December.",
+        "",
+        "Before we start — pick how often I should nudge you."
+      ].join("\n")
+    );
 
     await ctx.replyWithPhoto(new InputFile(samplePath), { caption });
+    await ctx.reply(
+      t(ctx, "Когда тебе удобно возвращаться?", "When's a good rhythm for you?"),
+      { reply_markup: reminderPresetKeyboard(ctx) }
+    );
     return;
   }
 
-  // Returning user: short status, voice/text input is the CTA.
+  // Returning user — condensed status.
   const [count, latest] = await Promise.all([
-    prisma.page.count({ where: { userId: user.id } }),
+    prisma.page.count({ where: { userId: user.id, kind: "WEEKLY" } }),
     prisma.page.findFirst({
-      where: { userId: user.id },
+      where: { userId: user.id, kind: "WEEKLY" },
       orderBy: { createdAt: "desc" },
       select: { sceneTitle: true }
     })
@@ -45,12 +74,22 @@ export async function sendStart(ctx: Context): Promise<void> {
 
   const lines: string[] = [];
   if (count === 0) {
-    lines.push("Книга пока пустая. Расскажи момент — открою первую страницу.");
+    lines.push(
+      t(
+        ctx,
+        "Книга пока с прологом. Расскажи момент этой недели — открою первую страницу.",
+        "The book has its prologue. Tell me this week's moment — I'll open page one."
+      )
+    );
   } else {
-    lines.push(`${count} из 52 записей в твоей книге.`);
-    if (latest) lines.push(`Последняя — «${latest.sceneTitle}».`);
+    lines.push(
+      t(ctx, `${count} из 52 страниц в твоей книге.`, `${count} of 52 pages in your book.`)
+    );
+    if (latest) {
+      lines.push(t(ctx, `Последняя — «${latest.sceneTitle}».`, `Most recent — "${latest.sceneTitle}".`));
+    }
   }
-  lines.push("", "Какой момент сохраним сейчас?");
+  lines.push("", t(ctx, "Какой момент сохраним сейчас?", "Which moment should we keep now?"));
 
-  await ctx.reply(lines.join("\n"));
+  await ctx.reply(lines.join("\n"), { reply_markup: mainMenuKeyboard(ctx) });
 }

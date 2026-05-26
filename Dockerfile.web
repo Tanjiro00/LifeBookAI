@@ -1,0 +1,22 @@
+FROM node:22-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY apps/bot/package.json apps/bot/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/ai/package.json packages/ai/package.json
+COPY packages/db/package.json packages/db/package.json
+COPY packages/renderer/package.json packages/renderer/package.json
+
+RUN npm install --no-audit --no-fund
+
+COPY tsconfig.base.json ./
+COPY apps apps
+COPY packages packages
+
+EXPOSE 3000
+
+WORKDIR /app/apps/web
+
+CMD ["npm", "run", "dev"]

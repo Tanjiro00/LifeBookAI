@@ -37,19 +37,64 @@ export type MemoryUpdate = z.infer<typeof MemoryUpdateSchema>;
 // One weekly entry — what the user sees as a card. The schema is intentionally
 // minimal: title, body, optional quote, mood/tags. No required "biographer note"
 // field — if the AI sees a thread, it weaves it into the body.
+// body max bumped to 2800 chars to accommodate 360-word Russian prose (~6.5 chars/word).
+// The previous 1400-char ceiling silently rejected most non-mock AI completions, so
+// the prologue path was falling through to the deterministic mock template — one of
+// the highest-impact UX bugs we shipped. If you ever need to tighten this, do it on
+// the prompt side ("max N words"), not the schema.
 export const EntryOutputSchema = z.object({
   title: z.string().trim().min(2).max(120),
-  body: z.string().trim().min(80).max(1400),
+  body: z.string().trim().min(80).max(2800),
   quote: OptionalText,
+  // Sprint 0.4 — Two new fields that drive the new delivery layer.
+  // teaser:      what the user sees on the poster-card. A 1–3 sentence opener of the
+  //              scene the page renders, NEVER the whole body. Hard-capped at 280 chars
+  //              so the card layout in renderPosterCard.ts stays predictable.
+  // pageSummary: an internal one-liner (≤ 400 chars) — used as fuel for narrative
+  //              context (Sprint 1) and for the «Я запомнил» follow-ups (Sprint 3).
+  //              Never shown to the user verbatim.
+  // Both are made optional with safe fallbacks so older AI completions and the mock
+  // fallback don't break — pageDeliveryService trims body to a teaser when missing.
+  teaser: z
+    .preprocess(
+      (v) => (v === null || v === undefined || v === "" ? undefined : v),
+      z.string().trim().min(20).max(280).optional()
+    ),
+  pageSummary: z
+    .preprocess(
+      (v) => (v === null || v === undefined || v === "" ? undefined : v),
+      z.string().trim().min(20).max(400).optional()
+    ),
   mood: TextArray,
   tags: TextArray,
   memoryUpdates: z.array(MemoryUpdateSchema).max(4).default([])
 });
 export type EntryOutput = z.infer<typeof EntryOutputSchema>;
 
+// Sprint 1.7 — GenerationContext bodies passed to the writer.
+//
+// `recentEntries` (legacy: titles + tags only) is preserved for backwards
+// compatibility, but the new `recentBodies` / `prologueBodies` / `relatedBodies`
+// fields carry the actual prose the writer needs to weave continuity. Without
+// these, every page is written effectively from scratch (the «52 disconnected
+// vignettes» bug we set out to fix).
+const PageBodySnippet = z.object({
+  pageId: z.string().optional(),
+  title: z.string(),
+  body: z.string(),
+  teaser: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  tags: z.array(z.string()).default([]),
+  mood: z.array(z.string()).default([]),
+  daysAgo: z.number().int().nonnegative().default(0),
+  similarity: z.number().optional()
+});
+
 export const GenerateEntryInputSchema = z.object({
   rawEntryOrTranscript: z.string().trim().min(10),
   language: z.string().optional().default("ru"),
+  // Legacy compact recents: kept so older callers still typecheck. New callers
+  // populate recentBodies instead.
   recentEntries: z
     .array(
       z.object({
@@ -60,10 +105,20 @@ export const GenerateEntryInputSchema = z.object({
       })
     )
     .default([]),
+  // Sprint 1.7 — full prose of the 2 most recent current pages.
+  recentBodies: z.array(PageBodySnippet).default([]),
+  // Up to 5 prologue bodies; foundation of the book the writer can echo from.
+  prologueBodies: z.array(PageBodySnippet).default([]),
+  // Top-K semantically similar pages from anywhere in the corpus. The writer
+  // is told to make ≤2 specific echoes from this set, never to summarize them.
+  relatedBodies: z.array(PageBodySnippet).default([]),
   memories: z
     .array(z.object({ type: z.string(), title: z.string(), content: z.string() }))
     .default([]),
-  entryNumber: z.number().int().positive()
+  entryNumber: z.number().int().positive(),
+  // Compact biographer briefing — the long-running summary of who this person is. Optional;
+  // when present, every page-prompt uses it as foundation so the book accumulates a single arc.
+  lifeContext: z.string().optional().nullable()
 });
 export type GenerateEntryInput = z.infer<typeof GenerateEntryInputSchema>;
 
